@@ -1,0 +1,20 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:16-alpine:///testdb
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+
+security:
+  jwt:
+    secret: dGVzdC1zZWNyZXQta2V5LWZvci11bml0LXRlc3RpbmctcHVycG9zZXMtb25seS1taW5pbXVtLTI1Ni1iaXRz
+    access-token-expiration: 900
+    refresh-token-expiration: 2592000
+
+github:
+  oauth:
+    client-id: test-client-id
+    client-secret: test-client-secret

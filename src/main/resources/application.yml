@@ -1,0 +1,72 @@
+spring:
+  application:
+    name: applicationServices
+
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/postgres}
+    username: ${DATABASE_USERNAME:postgres}
+    password: ${DATABASE_PASSWORD:root}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: false
+
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
+
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+# Security / JWT
+security:
+  jwt:
+    secret: ${JWT_SECRET:BkJxqiVyEijorcsnRlOyCrWSq26My/I5rkRlwR1YJDh03qByNs1U7yx3qtaPn4V/BXayh51EKZlTW6MuZ2NDHNSZrD8nuo3K7NFcS1KoThQ=}
+    access-token-expiration: ${JWT_ACCESS_TOKEN_EXPIRATION:900}
+    refresh-token-expiration: ${JWT_REFRESH_TOKEN_EXPIRATION:2592000}
+
+# GitHub OAuth
+github:
+  oauth:
+    client-id: ${GITHUB_CLIENT_ID:Ov23linGo4vogHg5ckk9}
+    client-secret: ${GITHUB_CLIENT_SECRET:d1f7491dde83b450f86e74b5bf27b67f7ac1e908}
+    redirect-uri: ${GITHUB_REDIRECT_URI:http://localhost:8080/api/v1/oauth/github/callback}
+
+# Application
+app:
+  frontend-url: ${FRONTEND_URL:http://localhost:3000}
+
+# Cloudinary
+config:
+  cloudinary:
+    cloud:
+      name: ${CLOUDINARY_CLOUD_NAME:djzufbvhc}
+      key: ${CLOUDINARY_CLOUD_KEY:376754654687596}
+      secret: ${CLOUDINARY_CLOUD_SECRET:ocRrHWoy44hDxYDi_nUrHlhc7cE}
+
+# SpringDoc
+springdoc:
+  paths-to-match: /api/**
+  packages-to-scan: com.kksg.applicationServices.identity.controller, com.kksg.applicationServices.controllers
+
+# Logging
+logging:
+  level:
+    com.kksg.applicationServices: INFO
+    org.springframework.security: WARN

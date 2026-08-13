@@ -1,0 +1,27 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/postgres
+    username: postgres
+    password: root
+
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+security:
+  jwt:
+    secret: BkJxqiVyEijorcsnRlOyCrWSq26My/I5rkRlwR1YJDh03qByNs1U7yx3qtaPn4V/BXayh51EKZlTW6MuZ2NDHNSZrD8nuo3K7NFcS1KoThQ=
+    access-token-expiration: 900
+    refresh-token-expiration: 2592000
+
+github:
+  oauth:
+    client-id: Ov23linGo4vogHg5ckk9
+    client-secret: d1f7491dde83b450f86e74b5bf27b67f7ac1e908
+
+logging:
+  level:
+    com.kksg.applicationServices: DEBUG
+    org.springframework.security: DEBUG
