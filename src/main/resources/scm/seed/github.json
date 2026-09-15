@@ -1,0 +1,422 @@
+{
+  "providerCode": "GITHUB",
+  "providerName": "GitHub",
+  "providerType": "CLOUD",
+  "displayOrder": 1,
+  "active": true,
+
+  "configuration": {
+    "api": {
+      "baseUrl": "https://api.github.com",
+      "version": "2022-11-28",
+      "defaultHeaders": {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      "authentication": {
+        "scheme": "BEARER",
+        "header": "Authorization",
+        "valuePrefix": "Bearer "
+      }
+    },
+
+    "oauth": {
+      "authorizationUrl": "https://github.com/login/oauth/authorize",
+      "tokenUrl": "https://github.com/login/oauth/access_token",
+      "scopes": ["repo", "read:user", "user:email", "admin:repo_hook"],
+      "scopeSeparator": " ",
+      "clientIdProperty": "scm.providers.github.client-id",
+      "clientSecretProperty": "scm.providers.github.client-secret",
+      "redirectUriProperty": "scm.providers.github.redirect-uri",
+      "tokenRequest": {
+        "authStyle": "BODY",
+        "encoding": "FORM",
+        "accept": "application/json"
+      },
+      "supportsRefresh": false
+    },
+
+    "webhook": {
+      "signatureAlgorithm": "HMAC_SHA256",
+      "signatureHeader": "x-hub-signature-256",
+      "signaturePrefix": "sha256=",
+      "eventHeader": "x-github-event",
+      "deliveryIdHeader": "x-github-delivery",
+      "actionPath": "action",
+      "secretProperty": "scm.providers.github.webhook-secret"
+    },
+
+    "pagination": {
+      "type": "PAGE",
+      "pageParameter": "page",
+      "sizeParameter": "per_page",
+      "defaultPageSize": 50,
+      "maxPageSize": 100
+    }
+  },
+
+  "capabilities": [
+    { "capabilityCode": "LIST_REPOSITORIES", "supported": true },
+    { "capabilityCode": "GET_REPOSITORY", "supported": true },
+    { "capabilityCode": "LIST_PULL_REQUESTS", "supported": true },
+    { "capabilityCode": "GET_PULL_REQUEST", "supported": true },
+    { "capabilityCode": "GET_PULL_REQUEST_FILES", "supported": true },
+    { "capabilityCode": "GET_PULL_REQUEST_DIFF", "supported": true },
+    { "capabilityCode": "CREATE_WEBHOOK", "supported": true },
+    { "capabilityCode": "DELETE_WEBHOOK", "supported": true },
+    { "capabilityCode": "CREATE_PR_COMMENT", "supported": true, "configuration": { "maxBodyLength": 65536 } },
+    { "capabilityCode": "CREATE_PR_REVIEW", "supported": true, "configuration": { "maxBodyLength": 65536 } },
+    {
+      "capabilityCode": "OAUTH_TOKEN_REFRESH",
+      "supported": false,
+      "configuration": {
+        "note": "GitHub OAuth App user tokens do not expire and no refresh token is issued. Revocation is handled by the user at GitHub."
+      }
+    },
+    { "capabilityCode": "WEBHOOK_SIGNATURE_VERIFICATION", "supported": true }
+  ],
+
+  "operations": [
+    {
+      "operationCode": "GET_CURRENT_ACCOUNT",
+      "httpMethod": "GET",
+      "endpointTemplate": "/user",
+      "responseMapping": {
+        "type": "OBJECT",
+        "fields": {
+          "externalId": "id",
+          "username": "login",
+          "displayName": "name",
+          "avatarUrl": "avatar_url"
+        },
+        "transforms": { "externalId": "TO_STRING" }
+      }
+    },
+
+    {
+      "operationCode": "LIST_REPOSITORIES",
+      "httpMethod": "GET",
+      "endpointTemplate": "/user/repos",
+      "requestConfiguration": {
+        "paginated": true,
+        "queryParams": {
+          "page": "{{page}}",
+          "per_page": "{{pageSize}}",
+          "affiliation": "owner,collaborator,organization_member",
+          "sort": "updated"
+        }
+      },
+      "responseMapping": {
+        "type": "LIST",
+        "fields": {
+          "externalId": "id",
+          "name": "name",
+          "fullName": "full_name",
+          "owner": "owner.login",
+          "isPrivate": "private",
+          "defaultBranch": "default_branch",
+          "description": "description",
+          "cloneUrl": "clone_url",
+          "webUrl": "html_url"
+        },
+        "transforms": { "externalId": "TO_STRING", "isPrivate": "TO_BOOLEAN" }
+      }
+    },
+
+    {
+      "operationCode": "GET_REPOSITORY",
+      "httpMethod": "GET",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}",
+      "requestConfiguration": { "requiredParameters": ["owner", "repo"] },
+      "responseMapping": {
+        "type": "OBJECT",
+        "fields": {
+          "externalId": "id",
+          "name": "name",
+          "fullName": "full_name",
+          "owner": "owner.login",
+          "isPrivate": "private",
+          "defaultBranch": "default_branch",
+          "description": "description",
+          "cloneUrl": "clone_url",
+          "webUrl": "html_url"
+        },
+        "transforms": { "externalId": "TO_STRING", "isPrivate": "TO_BOOLEAN" }
+      }
+    },
+
+    {
+      "operationCode": "LIST_PULL_REQUESTS",
+      "httpMethod": "GET",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}/pulls",
+      "requestConfiguration": {
+        "paginated": true,
+        "requiredParameters": ["owner", "repo"],
+        "queryParams": {
+          "page": "{{page}}",
+          "per_page": "{{pageSize}}",
+          "state": "{{state}}"
+        }
+      },
+      "responseMapping": {
+        "type": "LIST",
+        "fields": {
+          "externalId": "id",
+          "number": "number",
+          "title": "title",
+          "description": "body",
+          "state": "state",
+          "sourceBranch": "head.ref",
+          "targetBranch": "base.ref",
+          "sourceCommitSha": "head.sha",
+          "targetCommitSha": "base.sha",
+          "authorExternalId": "user.id",
+          "authorUsername": "user.login",
+          "webUrl": "html_url",
+          "createdAt": "created_at",
+          "updatedAt": "updated_at"
+        },
+        "transforms": {
+          "externalId": "TO_STRING",
+          "number": "TO_INTEGER",
+          "authorExternalId": "TO_STRING"
+        },
+        "valueMappings": {
+          "state": { "open": "OPEN", "closed": "CLOSED" }
+        }
+      }
+    },
+
+    {
+      "operationCode": "GET_PULL_REQUEST",
+      "httpMethod": "GET",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}/pulls/{{pullRequestNumber}}",
+      "requestConfiguration": { "requiredParameters": ["owner", "repo", "pullRequestNumber"] },
+      "responseMapping": {
+        "type": "OBJECT",
+        "fields": {
+          "externalId": "id",
+          "number": "number",
+          "title": "title",
+          "description": "body",
+          "state": "state",
+          "sourceBranch": "head.ref",
+          "targetBranch": "base.ref",
+          "sourceCommitSha": "head.sha",
+          "targetCommitSha": "base.sha",
+          "authorExternalId": "user.id",
+          "authorUsername": "user.login",
+          "webUrl": "html_url",
+          "createdAt": "created_at",
+          "updatedAt": "updated_at"
+        },
+        "transforms": {
+          "externalId": "TO_STRING",
+          "number": "TO_INTEGER",
+          "authorExternalId": "TO_STRING"
+        },
+        "valueMappings": {
+          "state": { "open": "OPEN", "closed": "CLOSED" }
+        }
+      }
+    },
+
+    {
+      "operationCode": "GET_PULL_REQUEST_FILES",
+      "httpMethod": "GET",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}/pulls/{{pullRequestNumber}}/files",
+      "requestConfiguration": {
+        "paginated": true,
+        "requiredParameters": ["owner", "repo", "pullRequestNumber"],
+        "queryParams": { "page": "{{page}}", "per_page": "{{pageSize}}" }
+      },
+      "responseMapping": {
+        "type": "LIST",
+        "fields": {
+          "path": "filename",
+          "previousPath": "previous_filename",
+          "changeType": "status",
+          "additions": "additions",
+          "deletions": "deletions",
+          "patch": "patch"
+        },
+        "transforms": { "additions": "TO_INTEGER", "deletions": "TO_INTEGER" },
+        "valueMappings": {
+          "changeType": {
+            "added": "ADDED",
+            "modified": "MODIFIED",
+            "removed": "REMOVED",
+            "renamed": "RENAMED",
+            "changed": "MODIFIED",
+            "copied": "ADDED"
+          }
+        },
+        "defaults": { "changeType": "UNKNOWN" }
+      }
+    },
+
+    {
+      "operationCode": "GET_PULL_REQUEST_DIFF",
+      "httpMethod": "GET",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}/pulls/{{pullRequestNumber}}",
+      "requestConfiguration": {
+        "requiredParameters": ["owner", "repo", "pullRequestNumber"],
+        "headers": { "Accept": "application/vnd.github.v3.diff" }
+      },
+      "responseMapping": { "type": "TEXT" }
+    },
+
+    {
+      "operationCode": "CREATE_WEBHOOK",
+      "httpMethod": "POST",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}/hooks",
+      "requestConfiguration": {
+        "requiredParameters": ["owner", "repo", "webhookUrl", "webhookSecret"],
+        "bodyTemplate": {
+          "name": "web",
+          "active": true,
+          "events": ["pull_request"],
+          "config": {
+            "url": "{{webhookUrl}}",
+            "content_type": "json",
+            "secret": "{{webhookSecret}}",
+            "insecure_ssl": "0"
+          }
+        }
+      },
+      "responseMapping": {
+        "type": "OBJECT",
+        "fields": { "externalId": "id", "webUrl": "url", "active": "active" },
+        "transforms": { "externalId": "TO_STRING" }
+      }
+    },
+
+    {
+      "operationCode": "DELETE_WEBHOOK",
+      "httpMethod": "DELETE",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}/hooks/{{webhookExternalId}}",
+      "requestConfiguration": { "requiredParameters": ["owner", "repo", "webhookExternalId"] },
+      "responseMapping": { "type": "RAW" }
+    },
+
+    {
+      "operationCode": "CREATE_PR_COMMENT",
+      "httpMethod": "POST",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}/issues/{{pullRequestNumber}}/comments",
+      "requestConfiguration": {
+        "requiredParameters": ["owner", "repo", "pullRequestNumber", "comment"],
+        "bodyTemplate": { "body": "{{comment}}" }
+      },
+      "responseMapping": {
+        "type": "OBJECT",
+        "fields": { "externalId": "id", "webUrl": "html_url" },
+        "transforms": { "externalId": "TO_STRING" }
+      }
+    },
+
+    {
+      "operationCode": "CREATE_PR_REVIEW",
+      "httpMethod": "POST",
+      "endpointTemplate": "/repos/{{owner}}/{{repo}}/pulls/{{pullRequestNumber}}/reviews",
+      "requestConfiguration": {
+        "requiredParameters": ["owner", "repo", "pullRequestNumber", "comment"],
+        "bodyTemplate": {
+          "body": "{{comment}}",
+          "event": "{{reviewEvent}}"
+        }
+      },
+      "responseMapping": {
+        "type": "OBJECT",
+        "fields": { "externalId": "id", "state": "state" },
+        "transforms": { "externalId": "TO_STRING" }
+      }
+    }
+  ],
+
+  "events": [
+    {
+      "providerEventName": "pull_request",
+      "providerAction": "opened",
+      "normalizedEventType": "PULL_REQUEST_OPENED",
+      "configuration": {
+        "payload": {
+          "type": "OBJECT",
+          "fields": {
+            "repositoryExternalId": "repository.id",
+            "repositoryFullName": "repository.full_name",
+            "pullRequestNumber": "pull_request.number",
+            "accountExternalId": "repository.owner.id"
+          },
+          "transforms": {
+            "repositoryExternalId": "TO_STRING",
+            "accountExternalId": "TO_STRING",
+            "pullRequestNumber": "TO_INTEGER"
+          }
+        }
+      }
+    },
+    {
+      "providerEventName": "pull_request",
+      "providerAction": "synchronize",
+      "normalizedEventType": "PULL_REQUEST_UPDATED",
+      "configuration": {
+        "payload": {
+          "type": "OBJECT",
+          "fields": {
+            "repositoryExternalId": "repository.id",
+            "repositoryFullName": "repository.full_name",
+            "pullRequestNumber": "pull_request.number",
+            "accountExternalId": "repository.owner.id"
+          },
+          "transforms": {
+            "repositoryExternalId": "TO_STRING",
+            "accountExternalId": "TO_STRING",
+            "pullRequestNumber": "TO_INTEGER"
+          }
+        }
+      }
+    },
+    {
+      "providerEventName": "pull_request",
+      "providerAction": "reopened",
+      "normalizedEventType": "PULL_REQUEST_REOPENED",
+      "configuration": {
+        "payload": {
+          "type": "OBJECT",
+          "fields": {
+            "repositoryExternalId": "repository.id",
+            "repositoryFullName": "repository.full_name",
+            "pullRequestNumber": "pull_request.number",
+            "accountExternalId": "repository.owner.id"
+          },
+          "transforms": {
+            "repositoryExternalId": "TO_STRING",
+            "accountExternalId": "TO_STRING",
+            "pullRequestNumber": "TO_INTEGER"
+          }
+        }
+      }
+    },
+    {
+      "providerEventName": "pull_request",
+      "providerAction": "closed",
+      "normalizedEventType": "PULL_REQUEST_CLOSED",
+      "configuration": {
+        "payload": {
+          "type": "OBJECT",
+          "fields": {
+            "repositoryExternalId": "repository.id",
+            "repositoryFullName": "repository.full_name",
+            "pullRequestNumber": "pull_request.number",
+            "accountExternalId": "repository.owner.id"
+          },
+          "transforms": {
+            "repositoryExternalId": "TO_STRING",
+            "accountExternalId": "TO_STRING",
+            "pullRequestNumber": "TO_INTEGER"
+          }
+        }
+      }
+    }
+  ]
+}

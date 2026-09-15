@@ -52,6 +52,50 @@ github:
 app:
   frontend-url: ${FRONTEND_URL:http://localhost:3000}
 
+# ---------------------------------------------------------------------------
+# Module 2 - SCM Provider Integration
+#
+# Provider behaviour (API URLs, OAuth endpoints, operations, webhook signature
+# scheme, pagination) is NOT configured here. It lives in the database, seeded
+# from classpath:scm/seed/*.json. Only secrets and deployment-specific values
+# belong in this file, because the database must never hold a client secret.
+#
+# The property names below are referenced by name from each provider's JSONB
+# configuration (clientIdProperty / clientSecretProperty / redirectUriProperty /
+# secretProperty), which is how a provider row points at a credential without
+# containing it.
+# ---------------------------------------------------------------------------
+scm:
+  secrets:
+    # Base64-encoded 256-bit AES key protecting every stored SCM credential.
+    # The default is a development key; startup logs a warning while it is in use.
+    # MUST be overridden via SCM_SECRETS_ENCRYPTION_KEY in any deployed environment.
+    encryption-key: ${SCM_SECRETS_ENCRYPTION_KEY:c2NtLWRldi1vbmx5LWtleS0zMi1ieXRlcy1sb25nISE=}
+    key-version: ${SCM_SECRETS_KEY_VERSION:1}
+
+  http:
+    connect-timeout-ms: ${SCM_HTTP_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${SCM_HTTP_READ_TIMEOUT_MS:20000}
+    max-response-bytes: ${SCM_HTTP_MAX_RESPONSE_BYTES:10485760}
+
+  seed:
+    # Reconciles provider configuration from classpath:scm/seed/*.json at startup.
+    # Providers with seed_managed = false are left untouched.
+    enabled: ${SCM_SEED_ENABLED:true}
+
+  providers:
+    github:
+      client-id: ${SCM_GITHUB_CLIENT_ID:${GITHUB_CLIENT_ID:}}
+      client-secret: ${SCM_GITHUB_CLIENT_SECRET:${GITHUB_CLIENT_SECRET:}}
+      redirect-uri: ${SCM_GITHUB_REDIRECT_URI:http://localhost:8080/api/v1/scm/connections/callback/GITHUB}
+      webhook-secret: ${SCM_GITHUB_WEBHOOK_SECRET:}
+
+    bitbucket:
+      client-id: ${SCM_BITBUCKET_CLIENT_ID:}
+      client-secret: ${SCM_BITBUCKET_CLIENT_SECRET:}
+      redirect-uri: ${SCM_BITBUCKET_REDIRECT_URI:http://localhost:8080/api/v1/scm/connections/callback/BITBUCKET}
+      webhook-secret: ${SCM_BITBUCKET_WEBHOOK_SECRET:}
+
 # Cloudinary
 config:
   cloudinary:
@@ -63,10 +107,13 @@ config:
 # SpringDoc
 springdoc:
   paths-to-match: /api/**
-  packages-to-scan: com.kksg.applicationServices.identity.controller, com.kksg.applicationServices.controllers
+  packages-to-scan: com.kksg.applicationServices.identity.controller, com.kksg.applicationServices.controllers, com.kksg.applicationServices.scm.provider.controller, com.kksg.applicationServices.scm.connection.controller, com.kksg.applicationServices.scm.webhook.controller
 
 # Logging
 logging:
   level:
     com.kksg.applicationServices: INFO
     org.springframework.security: WARN
+    # SCM integration logs one structured line per provider call (method, URI, status,
+    # duration) at INFO. Credentials, request headers and bodies are never logged.
+    com.kksg.applicationServices.scm: INFO

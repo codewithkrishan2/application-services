@@ -21,6 +21,28 @@ github:
     client-id: Ov23linGo4vogHg5ckk9
     client-secret: d1f7491dde83b450f86e74b5bf27b67f7ac1e908
 
+# Module 2 - SCM Provider Integration (local development)
+#
+# Reuses the Module 1 GitHub OAuth app credentials so a local GitHub connection can be
+# exercised without registering a second app. Note that the SCM connect flow requests
+# broader scopes (repo, admin:repo_hook) than Module 1 sign-in does, so the OAuth app
+# must be permitted to grant them and its callback list must include the SCM callback URL.
+#
+# Bitbucket is intentionally left blank: attempting to connect it locally fails fast with
+# SCM_PROVIDER_CONFIGURATION_INVALID naming the missing property, which is clearer than a
+# placeholder credential producing an opaque 401 from the provider.
+scm:
+  providers:
+    github:
+      client-id: Ov23linGo4vogHg5ckk9
+      client-secret: d1f7491dde83b450f86e74b5bf27b67f7ac1e908
+      redirect-uri: http://localhost:8080/api/v1/scm/connections/callback/GITHUB
+      webhook-secret: local-dev-github-webhook-secret
+
+    bitbucket:
+      redirect-uri: http://localhost:8080/api/v1/scm/connections/callback/BITBUCKET
+      webhook-secret: local-dev-bitbucket-webhook-secret
+
 logging:
   level:
     com.kksg.applicationServices: DEBUG

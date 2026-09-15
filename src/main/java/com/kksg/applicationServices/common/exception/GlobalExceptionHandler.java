@@ -1,6 +1,8 @@
 package com.kksg.applicationServices.common.exception;
 
 import com.kksg.applicationServices.common.response.ApiResponse;
+import com.kksg.applicationServices.scm.common.exception.ScmErrorCode;
+import com.kksg.applicationServices.scm.common.exception.ScmException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -40,6 +42,36 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleApiException(ApiException ex) {
         log.error("API exception: {}", ex.getMessage());
         return new ResponseEntity<>(ApiResponse.error(ex.getMessage()), HttpStatus.CONFLICT);
+    }
+
+    /**
+     * Maps every SCM integration failure through its {@link ScmErrorCode}.
+     *
+     * <p>One handler suffices because the error code owns both the HTTP status and a client-safe
+     * message, so adding a failure mode to the module never requires touching this class.
+     *
+     * <p>The response carries the code under {@code errors.code} so clients can branch on a stable
+     * identifier rather than on message text, which may be reworded.
+     *
+     * <p>Log level follows the code's status: 4xx outcomes are caller or user-state problems (an
+     * expired connection, an unsupported operation) and are logged at WARN; 5xx outcomes indicate a
+     * defect or a provider fault worth investigating and are logged at ERROR with the stack trace.
+     * {@code ScmErrorCode} messages are deliberately free of tokens, secrets and authorization codes,
+     * so echoing the message here cannot leak credentials.
+     */
+    @ExceptionHandler(ScmException.class)
+    public ResponseEntity<ApiResponse<Void>> handleScmException(ScmException ex) {
+        ScmErrorCode errorCode = ex.getErrorCode();
+        HttpStatus status = errorCode.getHttpStatus();
+
+        if (status.is5xxServerError()) {
+            log.error("SCM exception [{}]: {}", errorCode, ex.getMessage(), ex);
+        } else {
+            log.warn("SCM exception [{}]: {}", errorCode, ex.getMessage());
+        }
+
+        return new ResponseEntity<>(
+                ApiResponse.error(ex.getMessage(), Map.of("code", errorCode.name())), status);
     }
 
     @ExceptionHandler(BadCredentialsException.class)

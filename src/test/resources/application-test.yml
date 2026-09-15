@@ -18,3 +18,33 @@ github:
   oauth:
     client-id: test-client-id
     client-secret: test-client-secret
+
+# Module 2 - SCM Provider Integration (tests)
+#
+# Fixed, well-known values so tests can assert on them. The webhook secrets in particular
+# are used to compute expected HMAC signatures in the webhook tests, so changing them will
+# change those expectations.
+scm:
+  secrets:
+    encryption-key: c2NtLWRldi1vbmx5LWtleS0zMi1ieXRlcy1sb25nISE=
+    key-version: 1
+
+  http:
+    connect-timeout-ms: 2000
+    read-timeout-ms: 5000
+
+  seed:
+    enabled: true
+
+  providers:
+    github:
+      client-id: test-github-client-id
+      client-secret: test-github-client-secret
+      redirect-uri: http://localhost:8080/api/v1/scm/connections/callback/GITHUB
+      webhook-secret: test-github-webhook-secret
+
+    bitbucket:
+      client-id: test-bitbucket-client-id
+      client-secret: test-bitbucket-client-secret
+      redirect-uri: http://localhost:8080/api/v1/scm/connections/callback/BITBUCKET
+      webhook-secret: test-bitbucket-webhook-secret

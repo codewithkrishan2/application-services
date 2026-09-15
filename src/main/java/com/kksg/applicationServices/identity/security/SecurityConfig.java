@@ -36,6 +36,25 @@ public class SecurityConfig {
                                 "/swagger-ui/**",
                                 "/swagger-ui.html"
                         ).permitAll()
+
+                        // Module 2 (SCM) endpoints that cannot carry a bearer token.
+                        //
+                        // Inbound provider webhooks: the caller is GitHub/Bitbucket, which has no
+                        // application credential. Authenticity is established instead by HMAC
+                        // signature verification in ScmWebhookService, which runs before the payload
+                        // is parsed and before any database write.
+                        //
+                        // OAuth callback: a browser navigation initiated by the provider, so no
+                        // Authorization header is present. The user's identity is carried by the
+                        // signed `state` parameter, verified in ScmOAuthStateService.
+                        //
+                        // Both are narrow, explicit paths. Every other /api/v1/scm/** endpoint stays
+                        // behind JWT via the anyRequest() rule below.
+                        .requestMatchers(
+                                "/api/v1/scm/webhooks/**",
+                                "/api/v1/scm/connections/callback/**"
+                        ).permitAll()
+
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
