@@ -21,6 +21,14 @@ github:
     client-id: Ov23linGo4vogHg5ckk9
     client-secret: d1f7491dde83b450f86e74b5bf27b67f7ac1e908
 
+# Bitbucket sign-in. The consumer's callback URL must be set to the redirect-uri below in Bitbucket's
+# OAuth consumer settings, or Bitbucket rejects the authorization before the user ever sees a prompt.
+bitbucket:
+  oauth:
+    client-id: 7qpM2ib8tGOout0KzbEUva025uEPGtfL
+    client-secret: ATOAjW2WrYOkdRfaHca-8z9MN06PcKBBhwVfFMc4wBwnEws1ki6YzvELOaachDaWK2flC7B496DC
+    redirect-uri: http://localhost:8080/coderev/api/v1/oauth/bitbucket/callback
+
 # Module 2 - SCM Provider Integration (local development)
 #
 # Reuses the Module 1 GitHub OAuth app credentials so a local GitHub connection can be
@@ -36,11 +44,11 @@ scm:
     github:
       client-id: Ov23linGo4vogHg5ckk9
       client-secret: d1f7491dde83b450f86e74b5bf27b67f7ac1e908
-      redirect-uri: http://localhost:8080/api/v1/scm/connections/callback/GITHUB
+      redirect-uri: http://localhost:8080/coderev/api/v1/scm/connections/callback/GITHUB
       webhook-secret: local-dev-github-webhook-secret
 
     bitbucket:
-      redirect-uri: http://localhost:8080/api/v1/scm/connections/callback/BITBUCKET
+      redirect-uri: http://localhost:8080/coderev/api/v1/scm/connections/callback/BITBUCKET
       webhook-secret: local-dev-bitbucket-webhook-secret
 
 logging:

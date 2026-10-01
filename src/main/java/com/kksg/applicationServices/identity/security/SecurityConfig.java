@@ -29,7 +29,7 @@ public class SecurityConfig {
                 .exceptionHandling(ex -> ex.authenticationEntryPoint(jwtAuthenticationEntryPoint))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
-                                "/api/health",
+                                "/api/v1/health",
                                 "/api/v1/auth/**",
                                 "/api/v1/oauth/**",
                                 "/v3/api-docs/**",

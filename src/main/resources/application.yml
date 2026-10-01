@@ -1,3 +1,14 @@
+server:
+  servlet:
+    # Every endpoint is served beneath this prefix, so the API base becomes
+    # http://localhost:8080/coderev/api/v1 and Swagger UI moves to /coderev/swagger-ui.html.
+    #
+    # The prefix is stripped by the container before Spring sees the request, which is why no controller
+    # mapping, Spring Security matcher or springdoc path pattern mentions it. What it does affect is every
+    # URL this application hands to an outside party: the OAuth redirect URIs below, and any webhook URL
+    # registered with a provider. Those are absolute, so they must carry the prefix explicitly.
+    context-path: ${SERVER_CONTEXT_PATH:/coderev}
+
 spring:
   application:
     name: applicationServices
@@ -41,12 +52,30 @@ security:
     access-token-expiration: ${JWT_ACCESS_TOKEN_EXPIRATION:900}
     refresh-token-expiration: ${JWT_REFRESH_TOKEN_EXPIRATION:2592000}
 
-# GitHub OAuth
+# ---------------------------------------------------------------------------
+# Sign-in providers (Module 1 identity)
+#
+# One block per provider, read by the matching OAuthLoginProvider bean. The flow itself is shared, so
+# adding a provider means adding a block here plus one class - nothing in the flow changes.
+#
+# The redirect URI must be registered with the provider exactly as written, and must point at
+# /api/v1/oauth/{provider}/callback, because that is the path the controllers expose.
+# ---------------------------------------------------------------------------
 github:
   oauth:
     client-id: ${GITHUB_CLIENT_ID:Ov23linGo4vogHg5ckk9}
     client-secret: ${GITHUB_CLIENT_SECRET:d1f7491dde83b450f86e74b5bf27b67f7ac1e908}
-    redirect-uri: ${GITHUB_REDIRECT_URI:http://localhost:8080/api/v1/oauth/github/callback}
+    redirect-uri: ${GITHUB_REDIRECT_URI:http://localhost:8080/coderev/api/v1/oauth/github/callback}
+
+bitbucket:
+  oauth:
+    # Atlassian 3LO OAuth consumer ("CodeRev"). Unlike GitHub, the scopes this consumer may request are
+    # chosen in Bitbucket's consumer settings rather than in the authorization request, so no scope list
+    # appears here. The consumer needs at least the Account (email) permission for sign-in to resolve a
+    # user, and its callback URL must equal the redirect-uri below.
+    client-id: ${BITBUCKET_CLIENT_ID:7qpM2ib8tGOout0KzbEUva025uEPGtfL}
+    client-secret: ${BITBUCKET_CLIENT_SECRET:ATOAjW2WrYOkdRfaHca-8z9MN06PcKBBhwVfFMc4wBwnEws1ki6YzvELOaachDaWK2flC7B496DC}
+    redirect-uri: ${BITBUCKET_REDIRECT_URI:http://localhost:8080/coderev/api/v1/oauth/bitbucket/callback}
 
 # Application
 app:
@@ -87,13 +116,16 @@ scm:
     github:
       client-id: ${SCM_GITHUB_CLIENT_ID:${GITHUB_CLIENT_ID:}}
       client-secret: ${SCM_GITHUB_CLIENT_SECRET:${GITHUB_CLIENT_SECRET:}}
-      redirect-uri: ${SCM_GITHUB_REDIRECT_URI:http://localhost:8080/api/v1/scm/connections/callback/GITHUB}
+      redirect-uri: ${SCM_GITHUB_REDIRECT_URI:http://localhost:8080/coderev/api/v1/scm/connections/callback/GITHUB}
       webhook-secret: ${SCM_GITHUB_WEBHOOK_SECRET:}
 
     bitbucket:
-      client-id: ${SCM_BITBUCKET_CLIENT_ID:}
-      client-secret: ${SCM_BITBUCKET_CLIENT_SECRET:}
-      redirect-uri: ${SCM_BITBUCKET_REDIRECT_URI:http://localhost:8080/api/v1/scm/connections/callback/BITBUCKET}
+      # Falls back to the sign-in consumer, mirroring the GitHub entry above, so one registered consumer
+      # serves both flows. Note the SCM flow needs broader permissions (repositories, webhooks) than
+      # sign-in does, so the consumer must be granted those in Bitbucket for a connection to succeed.
+      client-id: ${SCM_BITBUCKET_CLIENT_ID:${BITBUCKET_CLIENT_ID:}}
+      client-secret: ${SCM_BITBUCKET_CLIENT_SECRET:${BITBUCKET_CLIENT_SECRET:}}
+      redirect-uri: ${SCM_BITBUCKET_REDIRECT_URI:http://localhost:8080/coderev/api/v1/scm/connections/callback/BITBUCKET}
       webhook-secret: ${SCM_BITBUCKET_WEBHOOK_SECRET:}
 
 # Cloudinary
