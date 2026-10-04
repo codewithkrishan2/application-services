@@ -81,9 +81,12 @@ public class RepositoryService {
                 query,
                 repository -> RepositoryMapper.matches(repository, query.search()),
                 repository -> RepositoryMapper.toResponse(repository, context.provider()),
-                // A 404 on the listing itself is not a missing repository - there is no repository in
-                // the request - so it is left as the engine's generic resource-not-found.
-                null);
+                // A 404 on the listing is not a missing repository - the request names none. It means
+                // the account scope the listing is made within could not be found, which on a provider
+                // with no cross-account listing endpoint is the scope derived from this connection.
+                // Naming it lets a client say "we could not resolve the workspace for this account"
+                // rather than the unactionable "the provider could not find what was requested".
+                ScmErrorCode.SCM_REPOSITORY_SCOPE_NOT_FOUND);
     }
 
     /**

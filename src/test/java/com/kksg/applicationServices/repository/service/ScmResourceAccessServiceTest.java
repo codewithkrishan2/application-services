@@ -6,6 +6,7 @@ import com.kksg.applicationServices.scm.common.exception.ScmException;
 import com.kksg.applicationServices.scm.connection.entity.ScmConnection;
 import com.kksg.applicationServices.scm.connection.entity.ScmConnectionStatus;
 import com.kksg.applicationServices.scm.connection.repository.ScmConnectionRepository;
+import com.kksg.applicationServices.scm.connection.service.ScmConnectionReadinessResolver;
 import com.kksg.applicationServices.scm.connection.service.ScmConnectionService;
 import com.kksg.applicationServices.scm.connection.service.ScmTokenService;
 import com.kksg.applicationServices.scm.provider.entity.ScmProvider;
@@ -64,12 +65,15 @@ class ScmResourceAccessServiceTest {
     @Mock
     private ScmProviderService providerService;
 
+    @Mock
+    private ScmConnectionReadinessResolver readinessResolver;
+
     private ScmConnectionService connectionService;
     private ScmResourceAccessService accessService;
 
     @BeforeEach
     void setUp() {
-        connectionService = new ScmConnectionService(connectionRepository, tokenService);
+        connectionService = new ScmConnectionService(connectionRepository, tokenService, readinessResolver);
         accessService = new ScmResourceAccessService(connectionService, providerService);
     }
 

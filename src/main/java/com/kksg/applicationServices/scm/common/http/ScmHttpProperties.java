@@ -29,4 +29,28 @@ public class ScmHttpProperties {
      * read would be a memory-exhaustion vector.
      */
     private int maxResponseBytes = 10 * 1024 * 1024;
+
+    /**
+     * Extra attempts after the first for a <b>retryable</b> failure.
+     *
+     * <p>Two, so one logical call makes at most three requests. Deliberately small: these retries sit
+     * inside a user's request, so each one adds directly to the latency they experience, and a provider
+     * that is genuinely down is not helped by being asked again.
+     *
+     * <p>What counts as retryable is narrow by design - see {@code ScmHttpExecutor}. It is not a
+     * general-purpose retry: a 4xx is a wrong request and will be wrong again, and a 429 is explicitly
+     * excluded because retrying a rate limit is what turns one into an outage.
+     *
+     * <p>Set to 0 to disable retries entirely.
+     */
+    private int maxRetries = 2;
+
+    /**
+     * Delay before the first retry, in milliseconds. Doubled for each subsequent attempt.
+     *
+     * <p>With the default of two retries that is a 250 ms then a 500 ms pause - enough to let a
+     * momentary gateway blip or a dropped connection clear, and bounded so the worst case adds under a
+     * second rather than seconds.
+     */
+    private long retryBackoffMs = 250;
 }

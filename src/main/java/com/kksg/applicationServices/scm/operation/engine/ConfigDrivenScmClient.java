@@ -16,12 +16,15 @@ import com.kksg.applicationServices.scm.connection.entity.ScmConnection;
 import com.kksg.applicationServices.scm.connection.service.ScmTokenService;
 import com.kksg.applicationServices.scm.operation.service.ResolvedOperation;
 import com.kksg.applicationServices.scm.operation.service.ScmProviderOperationService;
+import com.kksg.applicationServices.scm.provider.config.ConnectionParameterResolver;
 import com.kksg.applicationServices.scm.provider.config.ProviderConfiguration;
 import com.kksg.applicationServices.scm.provider.entity.ScmProvider;
 import com.kksg.applicationServices.scm.provider.service.ScmProviderService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import java.util.Map;
 
 /**
  * The generic SCM engine: executes any normalized operation against any configured provider.
@@ -74,6 +77,14 @@ public class ConfigDrivenScmClient implements ScmClient {
     /** Connection metadata key that overrides the provider's configured API base URL. */
     private static final String METADATA_BASE_URL = "baseUrl";
 
+    /**
+     * Ceiling on the {@code Retry-After} value passed to a client.
+     *
+     * <p>One hour. A provider asking us to wait longer is not a hint a UI can usefully render, and the
+     * value crosses a trust boundary, so it is bounded before it is repeated.
+     */
+    private static final int MAX_RETRY_AFTER_SECONDS = 3_600;
+
     private final ScmProviderService providerService;
     private final ScmProviderCapabilityService capabilityService;
     private final ScmProviderOperationService operationService;
@@ -83,6 +94,7 @@ public class ConfigDrivenScmClient implements ScmClient {
     private final ScmResponseNormalizer responseNormalizer;
     private final ScmPaginationResolver paginationResolver;
     private final ScmAdapterRegistry adapterRegistry;
+    private final ConnectionParameterResolver connectionParameterResolver;
     private final ObjectMapper objectMapper;
 
     public ConfigDrivenScmClient(ScmProviderService providerService,
@@ -94,6 +106,7 @@ public class ConfigDrivenScmClient implements ScmClient {
                                  ScmResponseNormalizer responseNormalizer,
                                  ScmPaginationResolver paginationResolver,
                                  ScmAdapterRegistry adapterRegistry,
+                                 ConnectionParameterResolver connectionParameterResolver,
                                  ObjectMapper objectMapper) {
         this.providerService = providerService;
         this.capabilityService = capabilityService;
@@ -104,6 +117,7 @@ public class ConfigDrivenScmClient implements ScmClient {
         this.responseNormalizer = responseNormalizer;
         this.paginationResolver = paginationResolver;
         this.adapterRegistry = adapterRegistry;
+        this.connectionParameterResolver = connectionParameterResolver;
         this.objectMapper = objectMapper;
     }
 
@@ -151,8 +165,15 @@ public class ConfigDrivenScmClient implements ScmClient {
         ResolvedOperation resolved = operationService.require(provider, request.getOperation());
         String baseUrl = resolveBaseUrl(configuration, connection);
 
-        ScmRequestBuilder.BuiltRequest built =
-                requestBuilder.build(request, configuration, resolved, baseUrl, accessToken);
+        // Parameters the provider declared it can derive from the connection - a Bitbucket workspace,
+        // for instance, which no caller of LIST_REPOSITORIES could know and which Atlassian's APIs now
+        // require. Resolved here rather than in a calling module so that no module above this one has
+        // to know which providers need what.
+        Map<String, Object> connectionDefaults =
+                connectionParameterResolver.resolve(configuration, connection);
+
+        ScmRequestBuilder.BuiltRequest built = requestBuilder.build(
+                request, configuration, resolved, baseUrl, accessToken, connectionDefaults);
 
         ScmOperationContext context = new ScmOperationContext(
                 provider, configuration, connection, request.getOperation(), resolved, built.parameters());
@@ -257,8 +278,12 @@ public class ConfigDrivenScmClient implements ScmClient {
                     "providerCode=%s rejected the credential".formatted(provider.getProviderCode()));
         }
         if (status == 429 || (status == 403 && isRateLimited(response))) {
+            // The provider's own wait hint, attached here because this is the only point at which the
+            // response headers still exist. Not retried inline: retrying a rate limit is how one
+            // becomes an outage, so the decision to wait is handed to the caller along with how long.
             return new ScmException(ScmErrorCode.SCM_PROVIDER_RATE_LIMITED,
-                    "providerCode=%s".formatted(provider.getProviderCode()));
+                    "providerCode=%s".formatted(provider.getProviderCode()))
+                    .withRetryAfterSeconds(readRetryAfterSeconds(response));
         }
         if (status == 404 || status == 410) {
             return new ScmException(ScmErrorCode.SCM_PROVIDER_RESOURCE_NOT_FOUND,
@@ -283,6 +308,32 @@ public class ConfigDrivenScmClient implements ScmClient {
             return true;
         }
         return response.header("retry-after") != null;
+    }
+
+    /**
+     * Reads {@code Retry-After} as a number of seconds.
+     *
+     * <p>Only the delta-seconds form is read. The header may also carry an HTTP date, but a date is
+     * only as good as the agreement between two clocks, and a skewed one would produce either a
+     * pointless wait or no wait at all. An unreadable value is reported as absent, which leaves the
+     * client with its own sensible default rather than a wrong number.
+     *
+     * <p>Also bounded: a provider asking us to wait a week is not a hint a UI can act on, and the
+     * value reaches a client, so it should be something a human can be told.
+     */
+    private Integer readRetryAfterSeconds(ScmHttpResponse response) {
+        String header = response.header("retry-after");
+        if (header == null || header.isBlank()) {
+            return null;
+        }
+        try {
+            int seconds = Integer.parseInt(header.trim());
+            return seconds > 0 ? Math.min(seconds, MAX_RETRY_AFTER_SECONDS) : null;
+        } catch (NumberFormatException ex) {
+            // An HTTP-date form, or something unexpected. Not logged with its value: the header is
+            // provider-controlled text and this line adds nothing a status code does not already say.
+            return null;
+        }
     }
 
 }

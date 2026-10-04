@@ -136,6 +136,24 @@ scm:
     # Reconciles provider configuration from classpath:scm/seed/*.json at startup.
     # Providers with seed_managed = false are left untouched.
     enabled: ${SCM_SEED_ENABLED:true}
+  token-refresh:
+    # Background renewal of provider credentials, ahead of expiry.
+    #
+    # Disabling this does NOT disable refresh: a request that finds an expiring credential still
+    # renews it inline. It only decides whether renewal is also attempted beforehand, which is what
+    # gives a transient token-endpoint failure several chances to recover before a user is affected.
+    #
+    # Whether a given provider can refresh at all comes from its configuration (oauth.supportsRefresh),
+    # not from here - GitHub OAuth App tokens never expire and are never swept.
+    enabled: ${SCM_TOKEN_REFRESH_ENABLED:true}
+    # Measured from the end of the previous sweep, so a slow sweep cannot overlap itself.
+    # Must stay comfortably shorter than lead-time or a token could expire inside one interval.
+    interval: ${SCM_TOKEN_REFRESH_INTERVAL:PT5M}
+    # How far ahead of expiry to renew. Several sweeps' worth of retries before any request is hit.
+    lead-time: ${SCM_TOKEN_REFRESH_LEAD_TIME:PT15M}
+    # Bound per sweep: each renewal is an outbound provider call, so an unbounded batch would compete
+    # with live traffic for the same rate limit. A backlog drains on the next tick, in expiry order.
+    batch-size: ${SCM_TOKEN_REFRESH_BATCH_SIZE:50}
 
   webhook:
     # Largest inbound delivery body accepted. The webhook endpoint is unauthenticated at the HTTP layer

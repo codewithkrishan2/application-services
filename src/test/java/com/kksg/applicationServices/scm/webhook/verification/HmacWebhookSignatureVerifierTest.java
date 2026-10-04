@@ -146,7 +146,7 @@ class HmacWebhookSignatureVerifierTest {
     @Test
     @DisplayName("rejects a delivery when the provider has no webhook configuration at all")
     void rejectsWhenWebhookBlockAbsent() {
-        ProviderConfiguration noWebhook = new ProviderConfiguration(null, null, null, null);
+        ProviderConfiguration noWebhook = new ProviderConfiguration(null, null, null, null, null);
 
         assertThat(verifier.verify(BODY, Map.of(), noWebhook.webhookOrEmpty(), SECRET)).isFalse();
     }

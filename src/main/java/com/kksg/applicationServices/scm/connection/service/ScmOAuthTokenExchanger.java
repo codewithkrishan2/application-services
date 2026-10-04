@@ -128,22 +128,51 @@ public class ScmOAuthTokenExchanger {
         return parseTokenResponse(provider, response, grantType);
     }
 
+    /**
+     * OAuth 2.0 error codes that mean "this grant will never work again".
+     *
+     * <p>From RFC 6749 section 5.2. They are enumerated, provider-independent values, which is what
+     * makes classifying on them safe rather than a guess at message text. Anything outside this set -
+     * a 5xx, a timeout, an unrecognised code - is treated as transient, because assuming a credential
+     * is dead when the provider was merely unwell would force a user through consent for no reason.
+     */
+    private static final java.util.Set<String> TERMINAL_OAUTH_ERRORS = java.util.Set.of(
+            "invalid_grant",          // the refresh token is expired, revoked, or already redeemed
+            "invalid_client",         // our client registration is wrong or disabled
+            "unauthorized_client",    // this client may not use this grant
+            "unsupported_grant_type",
+            "invalid_scope");
+
     private ScmTokenSet parseTokenResponse(ScmProvider provider, ScmHttpResponse response, String grantType) {
         JsonNode body = response.bodyJson();
 
         if (!response.isSuccessful() || body == null) {
-            log.warn("SCM_OAUTH_TOKEN_EXCHANGE_FAILED: providerCode={}, grantType={}, status={}",
-                    provider.getProviderCode(), grantType, response.statusCode());
-            throw new ScmException(ScmErrorCode.SCM_OAUTH_EXCHANGE_FAILED,
+            // A 400 or 401 from a token endpoint is the provider rejecting the grant, not an outage.
+            // Classified here so a dead credential is not retried forever.
+            boolean rejected = response.statusCode() == 400 || response.statusCode() == 401;
+
+            log.warn("SCM_OAUTH_TOKEN_EXCHANGE_FAILED: providerCode={}, grantType={}, status={}, terminal={}",
+                    provider.getProviderCode(), grantType, response.statusCode(), rejected);
+
+            throw new ScmException(
+                    rejected ? ScmErrorCode.SCM_OAUTH_REFRESH_REJECTED : ScmErrorCode.SCM_OAUTH_EXCHANGE_FAILED,
                     "providerCode=%s status=%d".formatted(provider.getProviderCode(), response.statusCode()));
         }
 
         // Providers frequently answer 200 with an error document rather than an error status.
         if (body.hasNonNull("error")) {
-            log.warn("SCM_OAUTH_TOKEN_EXCHANGE_REJECTED: providerCode={}, grantType={}, error={}",
-                    provider.getProviderCode(), grantType, body.get("error").asText());
-            throw new ScmException(ScmErrorCode.SCM_OAUTH_EXCHANGE_FAILED,
-                    "providerCode=%s".formatted(provider.getProviderCode()));
+            String error = body.get("error").asText();
+            boolean terminal = TERMINAL_OAUTH_ERRORS.contains(error.trim().toLowerCase(java.util.Locale.ROOT));
+
+            // The error *code* is logged because it is an OAuth-defined enumerated value and carries no
+            // secret. error_description is not: providers have been known to echo request content into
+            // it, and a token request's content is a credential.
+            log.warn("SCM_OAUTH_TOKEN_EXCHANGE_REJECTED: providerCode={}, grantType={}, error={}, terminal={}",
+                    provider.getProviderCode(), grantType, error, terminal);
+
+            throw new ScmException(
+                    terminal ? ScmErrorCode.SCM_OAUTH_REFRESH_REJECTED : ScmErrorCode.SCM_OAUTH_EXCHANGE_FAILED,
+                    "providerCode=%s error=%s".formatted(provider.getProviderCode(), error));
         }
 
         String accessToken = body.path("access_token").asText(null);

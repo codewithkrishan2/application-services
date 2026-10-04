@@ -36,6 +36,24 @@ public class ScmConnectionResponse {
 
     private String connectionStatus;
 
+    /**
+     * Whether the connection can actually be used right now.
+     *
+     * <p>Derived rather than stored, and <b>not</b> a restatement of {@code connectionStatus}: an
+     * {@code EXPIRED} connection whose provider issues refresh tokens reports {@code REFRESHABLE},
+     * because the next call renews it transparently and the user need do nothing. Clients should
+     * branch on this to decide what to offer, and on {@code connectionStatus} only to explain why.
+     *
+     * @see com.kksg.applicationServices.scm.connection.dto.ScmConnectionReadiness
+     */
+    private String readiness;
+
+    /** Whether a provider call may be attempted. True for READY, EXPIRING and REFRESHABLE. */
+    private boolean usable;
+
+    /** Whether the only remedy is the user granting consent again. */
+    private boolean reauthorizationRequired;
+
     /** Null when the provider issues non-expiring tokens. */
     private Instant tokenExpiry;
 

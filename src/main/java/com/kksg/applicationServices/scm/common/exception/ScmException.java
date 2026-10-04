@@ -23,23 +23,60 @@ public class ScmException extends RuntimeException {
 
     private final ScmErrorCode errorCode;
 
+    /** Kept so a derived copy can rebuild the message without appending the detail twice. */
+    private final String detail;
+
+    /**
+     * Seconds to wait before retrying, when the provider said so.
+     *
+     * <p>Only ever set for a rate limit, and only when the provider sent {@code Retry-After}. It lives
+     * on the exception because this is the one moment the value exists: the response header is gone by
+     * the time any other layer could ask for it.
+     *
+     * <p>Carried so a rate limit is <i>actionable</i> rather than merely reported. Without it the only
+     * honest thing a client can say is "try again sometime"; with it the UI can say how long, and no
+     * layer in between has to invent a retry loop of its own.
+     */
+    private final Integer retryAfterSeconds;
+
     public ScmException(ScmErrorCode errorCode) {
-        super(errorCode.getDefaultMessage());
-        this.errorCode = errorCode;
+        this(errorCode, null, null, null);
     }
 
     public ScmException(ScmErrorCode errorCode, String detail) {
-        super(buildMessage(errorCode, detail));
-        this.errorCode = errorCode;
+        this(errorCode, detail, null, null);
     }
 
     public ScmException(ScmErrorCode errorCode, String detail, Throwable cause) {
+        this(errorCode, detail, cause, null);
+    }
+
+    public ScmException(ScmErrorCode errorCode, String detail, Throwable cause, Integer retryAfterSeconds) {
         super(buildMessage(errorCode, detail), cause);
         this.errorCode = errorCode;
+        this.detail = detail;
+        this.retryAfterSeconds = retryAfterSeconds;
+    }
+
+    /**
+     * @return a copy carrying the provider's retry hint, or {@code this} when there is nothing to add -
+     *         so a caller can apply it unconditionally without first checking whether the provider
+     *         sent a header.
+     */
+    public ScmException withRetryAfterSeconds(Integer seconds) {
+        if (seconds == null || seconds <= 0) {
+            return this;
+        }
+        return new ScmException(errorCode, detail, getCause(), seconds);
     }
 
     public ScmErrorCode getErrorCode() {
         return errorCode;
+    }
+
+    /** @return the provider's retry hint in seconds, or {@code null} when it gave none. */
+    public Integer getRetryAfterSeconds() {
+        return retryAfterSeconds;
     }
 
     private static String buildMessage(ScmErrorCode errorCode, String detail) {

@@ -2,6 +2,8 @@ package com.kksg.applicationServices.scm.provider.config;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,13 +31,73 @@ import java.util.Optional;
  * @param oauth      authorization-code flow settings used when a user connects the provider.
  * @param webhook    inbound webhook identification and signature verification settings.
  * @param pagination how the provider expresses "there is another page".
+ * @param connectionParameters operation parameters derived from the connection itself rather than
+ *                   supplied by the caller. See {@link #connectionParameterTemplates()}.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record ProviderConfiguration(
         Api api,
         OAuth oauth,
         Webhook webhook,
-        Pagination pagination) {
+        Pagination pagination,
+        Map<String, Object> connectionParameters) {
+
+    /**
+     * Parameters a provider can fill in from the connection, as "name -> ordered candidate templates".
+     *
+     * <p><b>Why this exists.</b> Some providers have no endpoint that lists a user's repositories
+     * across their whole account - Bitbucket removed its cross-workspace APIs entirely, so
+     * {@code GET /2.0/repositories} is gone and the only supported listing is
+     * {@code GET /2.0/repositories/&#123;workspace&#125;}. That path needs a value no caller of
+     * {@code LIST_REPOSITORIES} can reasonably know: callers ask for "my repositories", not "the
+     * repositories in workspace X". The value is a property of the <i>connection</i>.
+     *
+     * <p>Rather than special-casing that provider in Java, a provider declares where the value comes
+     * from. Templates are resolved against connection facts:
+     *
+     * <pre>{@code
+     * "connectionParameters": {
+     *   "workspace": ["{{connection.metadata.workspace}}", "{{connection.accountName}}"]
+     * }
+     * }</pre>
+     *
+     * <p>A <b>list</b> of candidates, first resolvable wins - the same fallback idea
+     * {@code response_mapping} already uses for field paths, and for the same reason: the preferred
+     * source may be absent. Here that ordering means an explicit per-connection override is honoured
+     * first, and the account discovered at connect time is the default. A provider that needs nothing
+     * declares nothing, and GitHub declares nothing.
+     *
+     * <p>These are <b>defaults</b>: a caller that passes the parameter explicitly always wins, so
+     * {@code GET_REPOSITORY} addressing another workspace still works.
+     *
+     * @see com.kksg.applicationServices.scm.provider.config.ConnectionParameterResolver
+     */
+    public Map<String, List<String>> connectionParameterTemplates() {
+        if (connectionParameters == null || connectionParameters.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, List<String>> resolved = new LinkedHashMap<>();
+        connectionParameters.forEach((name, spec) -> {
+            List<String> candidates = new ArrayList<>();
+            if (spec instanceof String single) {
+                if (!single.isBlank()) {
+                    candidates.add(single);
+                }
+            } else if (spec instanceof List<?> list) {
+                for (Object element : list) {
+                    if (element instanceof String candidate && !candidate.isBlank()) {
+                        candidates.add(candidate);
+                    }
+                }
+            }
+            // A non-string, non-list value is ignored rather than rejected: a stray key in a
+            // configuration document should degrade to "no default" instead of failing every request.
+            if (!candidates.isEmpty()) {
+                resolved.put(name, List.copyOf(candidates));
+            }
+        });
+        return resolved;
+    }
 
     public Api apiOrEmpty() {
         return api != null ? api : new Api(null, null, null, null);

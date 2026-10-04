@@ -43,14 +43,21 @@ public class ScmHttpClientConfig {
     }
 
     /**
-     * Refuses to follow redirects.
+     * Refuses to let the HTTP client follow redirects on its own.
      *
      * <p>{@code HttpURLConnection} follows them by default and replays the original request headers on a
      * same-protocol redirect - including the {@code Authorization} header carrying the user's provider
      * token. A provider endpoint that answered {@code 302 Location: http://attacker/} would therefore be
-     * handed that credential, and nothing in this module would notice. Since every provider API call here
-     * targets a documented endpoint that has no reason to redirect, a 3xx is treated as the anomaly it is
-     * and surfaced to the engine as a failure.
+     * handed that credential, and nothing in this module would notice.
+     *
+     * <p><b>Redirects are still followed, but by {@code ScmHttpExecutor} and only when the target is the
+     * same origin</b>, which is the rule that makes forwarding the credential safe. That split matters:
+     * an earlier version of this class refused redirects outright on the assumption that "every provider
+     * API call targets a documented endpoint that has no reason to redirect", and that assumption was
+     * wrong - Bitbucket answers 302 for a pull request's {@code /diff} and {@code /diffstat}, so both
+     * operations failed with a misleading provider error while the provider was perfectly healthy.
+     * Deciding in the executor keeps the security property while letting legitimate same-host redirects
+     * work.
      */
     private static final class NonRedirectingRequestFactory extends SimpleClientHttpRequestFactory {
 

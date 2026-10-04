@@ -1,5 +1,6 @@
 package com.kksg.applicationServices.scm.connection.mapper;
 
+import com.kksg.applicationServices.scm.connection.dto.ScmConnectionReadiness;
 import com.kksg.applicationServices.scm.connection.dto.ScmConnectionResponse;
 import com.kksg.applicationServices.scm.connection.entity.ScmConnection;
 import com.kksg.applicationServices.scm.provider.entity.ScmProvider;
@@ -21,7 +22,24 @@ public final class ScmConnectionMapper {
     private ScmConnectionMapper() {
     }
 
+    /**
+     * Maps without a readiness signal.
+     *
+     * <p>Retained for the connect flow, which returns the connection it has just written and where
+     * readiness is knowable without computing it: a connection created moments ago from a fresh token
+     * exchange is ready by construction.
+     */
     public static ScmConnectionResponse toResponse(ScmConnection connection) {
+        return toResponse(connection, ScmConnectionReadiness.READY);
+    }
+
+    /**
+     * @param readiness derived by {@code ScmConnectionReadinessResolver}. Passed in rather than
+     *                  computed here because it depends on the provider's OAuth configuration, and a
+     *                  static mapper has no business reaching for a Spring bean to get it.
+     */
+    public static ScmConnectionResponse toResponse(ScmConnection connection,
+                                                   ScmConnectionReadiness readiness) {
         ScmProvider provider = connection.getProvider();
         Map<String, Object> metadata = connection.getMetadata();
 
@@ -37,6 +55,9 @@ public final class ScmConnectionMapper {
                 .tokenExpiry(connection.getTokenExpiry())
                 .connectedAt(connection.getConnectedAt())
                 .lastUsedAt(connection.getLastUsedAt())
+                .readiness(readiness != null ? readiness.name() : null)
+                .usable(readiness != null && readiness.isUsable())
+                .reauthorizationRequired(readiness != null && readiness.requiresUserAction())
                 .displayName(readString(metadata, METADATA_DISPLAY_NAME))
                 .avatarUrl(readString(metadata, METADATA_AVATAR_URL))
                 .build();

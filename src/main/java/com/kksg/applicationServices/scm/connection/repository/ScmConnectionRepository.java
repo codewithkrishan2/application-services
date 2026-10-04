@@ -6,6 +6,7 @@ import java.util.Optional;
 
 import jakarta.persistence.LockModeType;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
@@ -58,6 +59,37 @@ public interface ScmConnectionRepository extends JpaRepository<ScmConnection, In
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT c FROM ScmConnection c WHERE c.id = :id")
     Optional<ScmConnection> findByIdForUpdate(@Param("id") Integer id);
+
+    /**
+     * Connections whose access token is due for proactive renewal.
+     *
+     * <p>Selects on facts a column can answer, and leaves the rest to the caller: whether the
+     * <i>provider</i> supports refresh lives in a JSONB configuration document, which is not something
+     * to filter on in SQL. So this narrows to rows that could plausibly need work - expiring soon,
+     * holding a refresh credential, in a status worth attempting - and the scheduler checks provider
+     * support per row.
+     *
+     * <p><b>Status filter.</b> {@code ACTIVE} and {@code EXPIRED} only. {@code REVOKED} is excluded
+     * deliberately: it is the status a rejected grant produces, and retrying it on a timer is exactly
+     * the unbounded loop the terminal/transient split exists to stop. {@code DISCONNECTED} has no
+     * credentials left, and {@code ERROR} is held aside by definition.
+     *
+     * <p>Ordered by expiry so the most urgent go first, and the caller applies a page limit - a batch
+     * bound matters more than completeness here, because a backlog is drained by the next tick
+     * whereas an unbounded batch competes with live traffic for the provider's rate limit.
+     */
+    @EntityGraph(attributePaths = {"provider"})
+    @Query("""
+            SELECT c FROM ScmConnection c
+            WHERE c.tokenExpiry IS NOT NULL
+              AND c.tokenExpiry < :dueBefore
+              AND c.refreshTokenReference IS NOT NULL
+              AND c.connectionStatus IN (
+                    com.kksg.applicationServices.scm.connection.entity.ScmConnectionStatus.ACTIVE,
+                    com.kksg.applicationServices.scm.connection.entity.ScmConnectionStatus.EXPIRED)
+            ORDER BY c.tokenExpiry ASC
+            """)
+    List<ScmConnection> findDueForRefresh(@Param("dueBefore") Instant dueBefore, Pageable pageable);
 
     /**
      * Records that a connection was just used successfully, without loading the entity.

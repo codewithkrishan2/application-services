@@ -37,23 +37,30 @@ public class ScmConnectionService {
 
     private final ScmConnectionRepository connectionRepository;
     private final ScmTokenService tokenService;
+    private final ScmConnectionReadinessResolver readinessResolver;
 
     public ScmConnectionService(ScmConnectionRepository connectionRepository,
-                                ScmTokenService tokenService) {
+                                ScmTokenService tokenService,
+                                ScmConnectionReadinessResolver readinessResolver) {
         this.connectionRepository = connectionRepository;
         this.tokenService = tokenService;
+        this.readinessResolver = readinessResolver;
     }
 
     @Transactional(readOnly = true)
     public List<ScmConnectionResponse> listConnections(User user) {
         return connectionRepository.findByUserIdOrderByConnectedAtDesc(user.getId()).stream()
-                .map(ScmConnectionMapper::toResponse)
+                // Readiness is resolved per connection because it depends on that connection's own
+                // credential and on its provider's refresh support, not on the user.
+                .map(connection ->
+                        ScmConnectionMapper.toResponse(connection, readinessResolver.resolve(connection)))
                 .toList();
     }
 
     @Transactional(readOnly = true)
     public ScmConnectionResponse getConnection(User user, Integer connectionId) {
-        return ScmConnectionMapper.toResponse(requireOwned(user, connectionId));
+        ScmConnection connection = requireOwned(user, connectionId);
+        return ScmConnectionMapper.toResponse(connection, readinessResolver.resolve(connection));
     }
 
     /**

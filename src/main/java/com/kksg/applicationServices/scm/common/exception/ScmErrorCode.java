@@ -50,6 +50,23 @@ public enum ScmErrorCode {
     SCM_RESPONSE_MAPPING_INVALID(HttpStatus.INTERNAL_SERVER_ERROR, "Provider response could not be normalized"),
 
     SCM_OAUTH_EXCHANGE_FAILED(HttpStatus.BAD_GATEWAY, "Failed to complete provider authorization"),
+    /**
+     * The provider <b>refused the grant itself</b> - an OAuth {@code invalid_grant},
+     * {@code invalid_client} or equivalent.
+     *
+     * <p>Separated from {@link #SCM_OAUTH_EXCHANGE_FAILED} because the two differ in whether retrying
+     * can ever work, and that difference decides behaviour rather than wording. A 5xx or a timeout at
+     * the token endpoint is transient and the next attempt may well succeed; a rejected grant means
+     * the credential is dead - consumed, rotated away or withdrawn at the provider - and every
+     * subsequent attempt will fail identically.
+     *
+     * <p>Treating the two alike is what produced an unbounded retry loop: a connection whose refresh
+     * token had been revoked was marked {@code EXPIRED}, which is a usable status, so the very next
+     * API call attempted the same doomed exchange, and so did the one after that. This code is what
+     * lets a refresh failure be recorded as terminal.
+     */
+    SCM_OAUTH_REFRESH_REJECTED(HttpStatus.UNAUTHORIZED,
+            "The provider rejected the stored credential; the connection must be reauthorized"),
     SCM_OAUTH_STATE_INVALID(HttpStatus.BAD_REQUEST, "Authorization state is invalid or expired"),
 
     SCM_WEBHOOK_SIGNATURE_INVALID(HttpStatus.UNAUTHORIZED, "Webhook signature verification failed"),
@@ -74,6 +91,23 @@ public enum ScmErrorCode {
     SCM_REPOSITORY_NOT_FOUND(HttpStatus.NOT_FOUND,
             "Repository not found, or not accessible through this connection"),
     SCM_PULL_REQUEST_NOT_FOUND(HttpStatus.NOT_FOUND, "Pull request not found in this repository"),
+
+    /**
+     * The provider could not find the account scope that owns this connection's repositories.
+     *
+     * <p>Distinct from {@link #SCM_REPOSITORY_NOT_FOUND} because the user asked for no repository -
+     * they asked for a <i>list</i>, and the container the list lives in is what is missing. On
+     * providers with no cross-account listing endpoint, repositories can only be read within a named
+     * scope (a workspace, an organisation), and that scope is derived from the connection. A 404 on
+     * the listing therefore means the derived scope is wrong or invisible, not that a repository is
+     * absent - and the two call for completely different remedies.
+     *
+     * <p>Reported separately so a client can say "we could not resolve the workspace for this
+     * account" instead of the previous, unactionable "the provider could not find what was
+     * requested".
+     */
+    SCM_REPOSITORY_SCOPE_NOT_FOUND(HttpStatus.NOT_FOUND,
+            "The provider account scope that owns this connection's repositories could not be found"),
 
     SCM_SECRET_NOT_FOUND(HttpStatus.INTERNAL_SERVER_ERROR, "Stored credential could not be resolved"),
     SCM_SECRET_STORAGE_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "Credential could not be stored securely");

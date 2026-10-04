@@ -79,13 +79,7 @@ public class ScmTokenRefresher {
         try {
             renewed = tokenExchanger.refreshAccessToken(provider, refreshToken);
         } catch (ScmException ex) {
-            // Persist the failure so the UI can prompt for reauthorization rather than retrying forever.
-            locked.setConnectionStatus(ScmConnectionStatus.EXPIRED);
-            connectionRepository.save(locked);
-            log.warn("SCM_TOKEN_REFRESH_FAILED: connectionId={}, providerCode={}",
-                    connectionId, provider.getProviderCode());
-            throw new ScmException(ScmErrorCode.SCM_CONNECTION_EXPIRED,
-                    "connectionId=%d could not be renewed".formatted(connectionId), ex);
+            throw recordRefreshFailure(locked, provider, ex);
         }
 
         ScmConnectionTokens.write(locked, renewed, secretStore);
@@ -96,6 +90,54 @@ public class ScmTokenRefresher {
         log.info("SCM_TOKEN_REFRESHED: connectionId={}, providerCode={}, expiresAt={}",
                 connectionId, provider.getProviderCode(), renewed.getExpiresAt());
         return renewed.getAccessToken();
+    }
+
+    /**
+     * Records a failed refresh and returns the error to raise.
+     *
+     * <p><b>The terminal/transient split is the point of this method, and it fixes an unbounded retry
+     * loop.</b> Previously every failure set {@code EXPIRED}. {@code EXPIRED} is a <i>usable</i>
+     * status, so the next API call came straight back here and attempted the same exchange - a
+     * connection whose refresh token had been revoked would call the provider's token endpoint once
+     * per request, forever, and the user was never told to reconnect.
+     *
+     * <p>Now:
+     * <ul>
+     *   <li><b>Rejected grant</b> ({@code SCM_OAUTH_REFRESH_REJECTED}) - the credential is dead and no
+     *       retry can help, so the connection is marked {@code REVOKED}. That status is deliberately
+     *       <i>not</i> usable, which is what stops the loop: the next call fails immediately at the
+     *       usability check without touching the provider, and the UI can ask for fresh consent.</li>
+     *   <li><b>Anything else</b> - a 5xx, a timeout, an unrecognised error - is transient. The status
+     *       is left alone so a later attempt can succeed, and the caller gets
+     *       {@code SCM_CONNECTION_EXPIRED}. Marking a connection revoked because the provider was
+     *       briefly unwell would send the user through consent for nothing.</li>
+     * </ul>
+     *
+     * <p>The write happens on the locked row inside this transaction, so the status change and the
+     * decision that caused it commit together.
+     */
+    private ScmException recordRefreshFailure(ScmConnection locked, ScmProvider provider, ScmException cause) {
+        boolean terminal = cause.getErrorCode() == ScmErrorCode.SCM_OAUTH_REFRESH_REJECTED;
+
+        if (terminal) {
+            locked.setConnectionStatus(ScmConnectionStatus.REVOKED);
+            connectionRepository.save(locked);
+
+            log.warn("SCM_TOKEN_REFRESH_REJECTED: connectionId={}, providerCode={}, "
+                            + "status=REVOKED, reauthorizationRequired=true",
+                    locked.getId(), provider.getProviderCode());
+
+            return new ScmException(ScmErrorCode.SCM_CONNECTION_REVOKED,
+                    "connectionId=%d must be reauthorized".formatted(locked.getId()), cause);
+        }
+
+        log.warn("SCM_TOKEN_REFRESH_FAILED: connectionId={}, providerCode={}, errorCode={}, "
+                        + "status={} (unchanged, failure treated as transient)",
+                locked.getId(), provider.getProviderCode(), cause.getErrorCode(),
+                locked.getConnectionStatus());
+
+        return new ScmException(ScmErrorCode.SCM_CONNECTION_EXPIRED,
+                "connectionId=%d could not be renewed".formatted(locked.getId()), cause);
     }
 
     private String readAccessToken(ScmConnection connection) {

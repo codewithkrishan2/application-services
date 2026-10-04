@@ -12,6 +12,7 @@ import com.kksg.applicationServices.scm.common.util.JsonNodePaths;
 import com.kksg.applicationServices.scm.connection.entity.ScmConnection;
 import com.kksg.applicationServices.scm.connection.service.ScmConnectionService;
 import com.kksg.applicationServices.scm.event.ScmEventPublisher;
+import com.kksg.applicationServices.scm.event.ScmWebhookEventDispatcher;
 import com.kksg.applicationServices.scm.event.entity.ScmProviderEvent;
 import com.kksg.applicationServices.scm.event.service.ScmProviderEventService;
 import com.kksg.applicationServices.scm.operation.engine.ResponseMapping;
@@ -46,7 +47,7 @@ import java.util.Optional;
  *      -&gt; map event                  (scm_provider_events)   unmapped -&gt; IGNORED
  *      -&gt; claim delivery id          (unique constraint)      duplicate -&gt; acknowledge
  *      -&gt; normalize payload          (shared response normalizer)
- *      -&gt; publish normalized event   (ScmEventPublisher)
+ *      -&gt; publish normalized event   (ScmEventPublisher -&gt; ScmWebhookEventDispatcher)
  * </pre>
  *
  * <p><b>Order is deliberate.</b> Signature verification comes before anything is parsed or persisted, so
@@ -176,7 +177,8 @@ public class ScmWebhookService {
 
         deliveryService.markProcessing(delivery.getId());
         try {
-            eventPublisher.publish(NormalizedWebhookEvent.builder()
+            ScmWebhookEventDispatcher.DispatchResult dispatch =
+                    eventPublisher.publish(NormalizedWebhookEvent.builder()
                     .eventType(event.getNormalizedEventType())
                     .providerCode(provider.getProviderCode())
                     .deliveryRecordId(delivery.getId())
@@ -190,6 +192,24 @@ public class ScmWebhookService {
                     .rawPayload(toMap(payload))
                     .build());
 
+            // A consumer failure is reported as a value, not thrown, so this record is reached. The
+            // delivery is marked FAILED - which is what makes it replayable - but the request is still
+            // acknowledged, because a non-2xx would make the provider retry with the same delivery id and
+            // the claim would reject that retry as a duplicate forever.
+            if (dispatch.hasFailures()) {
+                deliveryService.markFailed(delivery.getId(), dispatch.failureReason());
+                log.error("SCM_WEBHOOK_CONSUMER_FAILED: providerCode={}, deliveryId={}, eventType={}, "
+                                + "consumers={}, succeeded={}, failures={}",
+                        provider.getProviderCode(), deliveryId, event.getNormalizedEventType(),
+                        dispatch.consumersInvoked(), dispatch.succeeded(), dispatch.failures());
+                return new WebhookProcessingResult(WebhookOutcome.FAILED, deliveryId, delivery.getId(),
+                        event.getNormalizedEventType());
+            }
+
+            // Zero consumers is still PROCESSED: this module's job is to normalize and publish, and it
+            // did. Recording FAILED would alert on a deployment that simply has no orchestration
+            // installed, and recording IGNORED would collide with the meaning it already carries for
+            // unmapped provider events. The dispatcher logs SCM_EVENT_NO_CONSUMER so the state is visible.
             deliveryService.markProcessed(delivery.getId());
             return new WebhookProcessingResult(WebhookOutcome.ACCEPTED, deliveryId, delivery.getId(),
                     event.getNormalizedEventType());
@@ -318,7 +338,15 @@ public class ScmWebhookService {
         if (value == null || value.isNull()) {
             return null;
         }
-        return value.isNumber() ? value.asInt() : tryParseInt(value.asText());
+        if (value.isNumber()) {
+            return value.asInt();
+        }
+        // Written as a statement rather than a conditional expression deliberately. A ternary mixing
+        // the primitive from asInt() with the Integer from tryParseInt() promotes the whole expression
+        // to int, so a null from tryParseInt is unboxed and throws - and this runs before the delivery
+        // is claimed, so a provider sending a non-numeric pull request number would get a 500, retry,
+        // and get a 500 again until the webhook was disabled.
+        return tryParseInt(value.asText());
     }
 
     private Integer tryParseInt(String value) {

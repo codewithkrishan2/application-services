@@ -50,6 +50,13 @@
       "defaultPageSize": 50,
       "maxPageSize": 100,
       "nextPath": "next"
+    },
+
+    "connectionParameters": {
+      "workspace": [
+        "{{connection.metadata.workspace}}",
+        "{{connection.accountName}}"
+      ]
     }
   },
 
@@ -99,13 +106,13 @@
     {
       "operationCode": "LIST_REPOSITORIES",
       "httpMethod": "GET",
-      "endpointTemplate": "/repositories",
+      "endpointTemplate": "/repositories/{{workspace}}",
       "requestConfiguration": {
         "paginated": true,
+        "requiredParameters": ["workspace"],
         "queryParams": {
           "page": "{{page}}",
           "pagelen": "{{pageSize}}",
-          "role": "member",
           "sort": "-updated_on"
         }
       },

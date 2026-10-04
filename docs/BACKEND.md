@@ -27,6 +27,7 @@ Repository management has its own document — [`features/repository-management.
 - [Data model](#data-model)
 - [Security](#security)
 - [Configuration](#configuration)
+- [Testing](#testing)
 - [Known gaps](#known-gaps)
 
 ---
@@ -50,7 +51,7 @@ It is annotated `@JsonInclude(NON_NULL)`, so **absent keys are the norm**: succe
 | `ResourceNotFoundException` | 404 | `error(message)` |
 | `MethodArgumentNotValidException` | 400 | `error("Validation failed", {field: message})` |
 | `ApiException` | **409** | `error(message)` |
-| `ScmException` | per `ScmErrorCode` | `error(message, {"code": "SCM_..."})` |
+| `ScmException` | per `ScmErrorCode` | `error(message, {"code": "SCM_..."})`, plus `errors.retryAfterSeconds` and a `Retry-After` header when the provider supplied one |
 | `MethodArgumentTypeMismatchException` | 400 | `error("Invalid parameter type")` |
 | `AccessDeniedException` | 403 | `error("Access denied")` |
 | `BadCredentialsException` | 401 | `error("Invalid email or password")` — unreachable, nothing throws it |
@@ -225,7 +226,9 @@ A second path exists — `POST /api/v1/scm/connections` with a client-captured `
 
 `ScmProviderDetailResponse` — the above plus `apiBaseUrl`, `oauthScopes[]`, `supportedCapabilities[]`, `unsupportedCapabilities[]`, `configuredOperations[]`. Deliberately excludes raw provider config, credential property names and webhook signature settings.
 
-`ScmConnectionResponse` — `id`, `providerId`, `providerCode`, `providerName`, `externalAccountId`, `externalAccountName`, `connectionStatus`, `tokenExpiry` (nullable — null means the token does not expire), `connectedAt`, `lastUsedAt` (nullable), `displayName` (nullable), `avatarUrl` (nullable). **Never carries a token or token reference**; the mapper has no access to the credential store.
+`ScmConnectionResponse` — `id`, `providerId`, `providerCode`, `providerName`, `externalAccountId`, `externalAccountName`, `connectionStatus`, `tokenExpiry` (nullable — null means the token does not expire), `connectedAt`, `lastUsedAt` (nullable), `displayName` (nullable), `avatarUrl` (nullable), plus the three readiness fields described under [credential lifecycle](#credential-lifecycle): `readiness`, `usable`, `reauthorizationRequired`. **Never carries a token or token reference**; the mapper has no access to the credential store.
+
+Clients should branch on `usable` and `reauthorizationRequired` rather than on `connectionStatus`. The raw status cannot answer "can I use this now" on its own — `EXPIRED` is usable when the credential can be refreshed silently and not usable when it cannot, and reading it directly is what previously made the UI ask for consent the backend did not need.
 
 `ScmAuthorizationUrlResponse` — `authorizationUrl`, `providerCode`, `state`.
 
@@ -235,6 +238,48 @@ A second path exists — `POST /api/v1/scm/connections` with a client-captured `
 
 Provider client ids and secrets are not stored in the database at all. `scm_providers.configuration` stores *pointers* — `"clientSecretProperty": "scm.providers.github.client-secret"` — which `ProviderCredentialResolver` dereferences against the Spring `Environment`. Two consequences, and they are the reason for the indirection: a database backup or an admin API that returns provider configuration cannot leak a client secret, and each environment points at its own OAuth application with no per-environment database difference. Error messages name only the missing *property*, never a value.
 
+### Credential lifecycle
+
+Tokens are renewed in two places, and both go through `ScmTokenRefresher.refresh`, which holds a `SELECT … FOR UPDATE` row lock and re-checks expiry *after* acquiring it:
+
+- **On demand** — `ScmTokenService` finds a credential within 60 s of expiry while serving a request and renews it inline.
+- **Ahead of time** — `ScmTokenRefreshScheduler` sweeps every `scm.token-refresh.interval` for credentials expiring inside `scm.token-refresh.lead-time`, in bounded batches.
+
+The sweep exists because on-demand renewal is the last possible moment: the user pays the token-endpoint latency inside their own request, and a failure there has no slack — that request fails and so does every one after it. A failure found by the sweep is simply retried on the next tick. It is not a second implementation; it calls the same locking refresher, which is what keeps the sweep and a concurrent user request from both redeeming the same refresh token. Whether a provider can refresh at all is read from `oauth.supportsRefresh`, never from a provider name, so GitHub's non-expiring tokens need no special case — they have a null expiry and the query never returns them.
+
+**Refresh failures are classified terminal or transient**, and the distinction is the difference between a connection the user is asked to fix and one that quietly hammers the provider:
+
+| Outcome | Trigger | Connection becomes | Error raised |
+|---|---|---|---|
+| Terminal | RFC 6749 §5.2 rejection code (`invalid_grant`, `invalid_client`, `unauthorized_client`, `unsupported_grant_type`, `invalid_scope`), or HTTP 400/401 from the token endpoint | `REVOKED` | `SCM_CONNECTION_REVOKED` |
+| Transient | 5xx, timeout, rate limit, unrecognised error code | *unchanged* | `SCM_CONNECTION_EXPIRED` |
+
+Terminal failures set `REVOKED` specifically because `ScmConnection.isUsable()` rejects it. That is what stops the loop: before this split, every failure set `EXPIRED`, which `isUsable()` *accepts*, so a dead refresh token was re-exchanged on every single API call indefinitely and the user was never told to reconnect. Transient failures leave the status alone so a later attempt can win — revoking a connection because the provider had a bad minute would send the user through consent for nothing. `findDueForRefresh` deliberately excludes `REVOKED`, so a terminal failure is never swept again.
+
+**Readiness** (`ScmConnectionReadiness`) is the single derived answer to "can this be used right now", resolved by `ScmConnectionReadinessResolver` and surfaced on every connection response. It is derived rather than stored because it depends on the current time:
+
+| `readiness` | `usable` | `reauthorizationRequired` | Meaning |
+|---|---|---|---|
+| `READY` | true | false | Valid, or a provider that issues non-expiring tokens |
+| `EXPIRING` | true | false | Within 15 minutes of expiry; the sweep is already about to renew it |
+| `REFRESHABLE` | true | false | Expired, but renewable with no user involvement |
+| `REAUTHORIZATION_REQUIRED` | false | true | Needs fresh consent |
+| `DISCONNECTED` | false | false | Removed locally; do not prompt |
+| `ERROR` | false | false | Held aside after repeated failures |
+
+`REFRESHABLE` requires two independent facts: the provider declares `oauth.supportsRefresh`, **and** this particular connection holds a refresh credential. A provider that supports refresh is no help to a grant that never received a refresh token. The 15-minute `EXPIRING` window matches the sweep's default lead time on purpose — a shorter one would report "expiring" for connections already renewed.
+
+### Rate limits and retries
+
+`ScmHttpExecutor` retries a request at most `scm.http.max-retries` times, with a doubling backoff from `scm.http.retry-backoff-ms`, and only when **both** conditions hold:
+
+- the status is 502, 503 or 504, or the call failed at the transport layer (no status at all);
+- the method is idempotent — `GET`, `HEAD` or `DELETE`.
+
+`POST`, `PUT` and `PATCH` are never retried: a lost *response* is not a lost *request*, and replaying a token exchange can destroy a working credential. **429 is never retried inline** either — retrying a rate limit is how one becomes an outage. It is surfaced instead as `SCM_PROVIDER_RATE_LIMITED` carrying the provider's own wait hint, which reaches the client as both `errors.retryAfterSeconds` and a `Retry-After` header. Only the delta-seconds form of `Retry-After` is read (an HTTP date is only as good as two clocks agreeing), and the value is capped at one hour before being repeated.
+
+A 403 is read as a rate limit only when the response carries `x-ratelimit-remaining: 0` or a `Retry-After` header; otherwise it is a genuine authorisation refusal. Telling a user to wait for a permission they will never be granted is worse than telling them nothing.
+
 ### Webhooks
 
 `POST /api/v1/scm/webhooks/{providerCode}` is unauthenticated at the HTTP layer — authenticity comes from the HMAC signature, verified before anything is parsed or written. The body is read as raw `byte[]` so the HMAC is computed over exactly the bytes the provider sent. A bad signature is `SCM_WEBHOOK_SIGNATURE_INVALID` (401) with no database trace.
@@ -243,7 +288,31 @@ Because the body must be buffered whole before the signature can be checked, `We
 
 Once the signature verifies the endpoint always answers **200**, including for duplicates, unmapped events and internal failures, because a non-2xx would cause providers to disable the webhook. The outcome is in the body: `ScmWebhookAckResponse { outcome, deliveryId, eventType }` where `outcome` is `ACCEPTED | DUPLICATE | IGNORED | FAILED`.
 
-Deliveries are recorded in `scm_webhook_deliveries`. Normalised event types are `PULL_REQUEST_OPENED | PULL_REQUEST_UPDATED | PULL_REQUEST_REOPENED | PULL_REQUEST_CLOSED`. **Nothing consumes them yet** — ingestion is built, review is not.
+Deliveries are recorded in `scm_webhook_deliveries`. Normalised event types are `PULL_REQUEST_OPENED | PULL_REQUEST_UPDATED | PULL_REQUEST_REOPENED | PULL_REQUEST_CLOSED`.
+
+Deduplication is the insert itself: `ScmWebhookDeliveryService.claim` attempts the row and treats a unique-constraint violation as "already claimed". A pre-check alone cannot work, because two concurrent deliveries of the same event both see no existing row before either commits. The claim happens **before** publishing, so a provider retry arriving mid-processing is recognised as a duplicate rather than starting duplicate downstream work. A duplicate is acknowledged and dropped — except for a delivery already in `FAILED`, which is the one worth reprocessing, since the retry is a free chance to recover from a transient fault. When a provider sends no delivery header, the id falls back to `sha256:<digest of the raw body>`; deduplication must not silently switch off.
+
+#### Consuming normalised events
+
+`ScmEventPublisher` is the module's outbound boundary and delegates to `ScmWebhookEventDispatcher`. There are two ways to subscribe, and **no compile-time dependency runs from this module to any subscriber**:
+
+| Route | How | Use when |
+|---|---|---|
+| `ScmWebhookEventConsumer` | Implement the interface; Spring injects every bean | Preferred — isolated from peers, named in logs, can declare which event types it wants via `supports(...)` |
+| `@EventListener(NormalizedWebhookEvent.class)` | Plain Spring listener | Compatibility; served by `ApplicationEventWebhookEventConsumer`, which is itself just a registered consumer |
+
+Each consumer is invoked in its own try/catch, so one that throws cannot stop its neighbours — which a bare `ApplicationEventPublisher.publishEvent` could not guarantee, since Spring publishes synchronously and the first listener to throw aborts the rest. Failures come back as a value rather than an exception, because the delivery has already been claimed and must be recorded: any consumer failure marks the delivery `FAILED` with a reason of `consumerName/ExceptionType` — the exception *message* is deliberately excluded, as a consumer's message may quote payload content. The request is still acknowledged 2xx.
+
+The consumer contract, in full:
+
+- **Be idempotent on `deliveryId`.** A `FAILED` delivery is replayable, and a replay re-invokes consumers that already succeeded.
+- **Throw to request a replay.** A consumer whose failure should not hold up the delivery must catch its own errors.
+- **Do not block.** Consumers run on the webhook request thread, inside the window the provider is waiting on. Queue the work.
+- **Do not branch on `providerCode`.** It is there for logs and metrics; needing it to decide behaviour means the event mapping is incomplete, and that is where the fix belongs.
+
+Dispatch is synchronous and in-process, so an event in flight is lost if the process dies. That is survivable rather than ignored: a row left in `RECEIVED` or `PROCESSING` is exactly the evidence needed to replay it. A durable outbox is the documented next step, and the dispatcher is the single place it would be introduced.
+
+**Zero consumers is a legitimate state** — it is what a deployment without Review Orchestration looks like — and such a delivery is still recorded `PROCESSED`, with a `SCM_EVENT_NO_CONSUMER` log line for visibility. Recording `FAILED` would alert on an expected absence; `IGNORED` already means "unmapped provider event". **Nothing subscribes today** — ingestion and dispatch are built, review is not.
 
 ### Enums
 
@@ -277,14 +346,37 @@ Deliveries are recorded in `scm_webhook_deliveries`. Normalised event types are 
 | `SCM_OPERATION_NOT_CONFIGURED` / `SCM_RESPONSE_MAPPING_INVALID` | 500 |
 | `SCM_OAUTH_STATE_INVALID` | 400 |
 | `SCM_OAUTH_EXCHANGE_FAILED` / `SCM_PROVIDER_API_ERROR` | 502 |
+| `SCM_OAUTH_REFRESH_REJECTED` | 401 |
 | `SCM_PROVIDER_RATE_LIMITED` | 429 |
 | `SCM_PROVIDER_RESOURCE_NOT_FOUND` | 404 |
 | `SCM_REPOSITORY_NOT_FOUND` / `SCM_PULL_REQUEST_NOT_FOUND` | 404 |
+| `SCM_REPOSITORY_SCOPE_NOT_FOUND` | 404 |
 | `SCM_WEBHOOK_SIGNATURE_INVALID` | 401 |
 | `SCM_WEBHOOK_ALREADY_PROCESSED` / `SCM_WEBHOOK_EVENT_NOT_MAPPED` | 200 |
 | `SCM_SECRET_NOT_FOUND` / `SCM_SECRET_STORAGE_FAILED` | 500 |
 
-The last six were added by the repository-management module. They live here rather than in a second vocabulary because one enum that owns both the code and the HTTP status is what lets `GlobalExceptionHandler` need exactly one handler for all of it — adding a failure mode never requires touching that class.
+They all live here rather than in a second vocabulary because one enum that owns both the code and the HTTP status is what lets `GlobalExceptionHandler` need exactly one handler for all of it — adding a failure mode never requires touching that class.
+
+Two of them exist to preserve a distinction a single code would have lost:
+
+- **`SCM_OAUTH_REFRESH_REJECTED`** (401) versus `SCM_OAUTH_EXCHANGE_FAILED` (502) — the terminal/transient split described under [credential lifecycle](#credential-lifecycle). Without it, a dead credential and a brief provider outage are indistinguishable, and one of the two gets the wrong treatment.
+- **`SCM_REPOSITORY_SCOPE_NOT_FOUND`** (404) versus `SCM_REPOSITORY_NOT_FOUND` (404) — same status, different cause and different fix. The second means the repository the user asked for is absent or invisible. The first means the user asked for no repository at all: the *account scope* the listing is derived from could not be resolved, which for Bitbucket means no readable workspace. The wording a client shows has to differ, because "repository not found" is nonsense advice when the user asked for a list.
+
+### Provider-derived operation parameters
+
+Some provider endpoints need a value no caller could reasonably supply. Bitbucket's repository listing is the worked example: `GET /2.0/repositories` — the cross-workspace endpoint — was end-of-lifed by Atlassian on **14 April 2026**, and the only supported listing is now `GET /2.0/repositories/{workspace}`. Callers of `LIST_REPOSITORIES` ask for "my repositories", not "the repositories in workspace X"; the workspace is a property of the *connection*.
+
+Rather than branch on the provider in Java, a provider declares where the value comes from, in its `configuration`:
+
+```json
+"connectionParameters": {
+  "workspace": ["{{connection.metadata.workspace}}", "{{connection.accountName}}"]
+}
+```
+
+`ConnectionParameterResolver` resolves these against connection facts — `{{connection.id}}`, `{{connection.accountId}}`, `{{connection.accountName}}`, `{{connection.metadata.KEY}}`. A **list** means "first resolvable wins", the same fallback idea `response_mapping` already uses for field paths: an explicit per-connection override is honoured first, and the account discovered at connect time is the default. These are *defaults* — a caller that passes the parameter explicitly always wins, so `GET_REPOSITORY` addressing another workspace still works. A provider that needs nothing declares nothing, and GitHub declares nothing.
+
+> **Bitbucket requires a readable workspace.** Atlassian removed every endpoint that could discover one (`/2.0/workspaces`, `/2.0/user/permissions/workspaces`, `/2.0/user/permissions/repositories` all answer 404 now) and has stated there will be no cross-workspace replacement — so this cannot be auto-discovered, by us or by anyone. A Bitbucket connection whose account has no workspace, or whose workspace slug differs from the account name, returns `SCM_REPOSITORY_SCOPE_NOT_FOUND` until `metadata.workspace` is set on the connection row.
 
 ---
 
@@ -364,6 +456,16 @@ That default is deliberate: the Next.js frontend calls this API **server-to-serv
 | `scm.secrets.encryption-key` | `SCM_SECRETS_ENCRYPTION_KEY` | dev key — **override in deployment** |
 | `scm.webhook.max-request-bytes` | `SCM_WEBHOOK_MAX_REQUEST_BYTES` | `1048576` |
 | `scm.seed.enabled` | `SCM_SEED_ENABLED` | `true` |
+| `scm.http.max-retries` | — | `2` |
+| `scm.http.retry-backoff-ms` | — | `250` (doubling) |
+| `scm.token-refresh.enabled` | — | `true` |
+| `scm.token-refresh.interval` | — | `PT5M` |
+| `scm.token-refresh.lead-time` | — | `PT15M` |
+| `scm.token-refresh.batch-size` | — | `50` |
+
+`scm.token-refresh.enabled=false` disables only the proactive sweep; the on-demand path in `ScmTokenService` still renews a credential it finds expiring. `interval` must stay comfortably shorter than `lead-time`, or a token can expire inside one interval and be found only after the fact. `batch-size` is a bound rather than a target — each renewal is an outbound call, and a backlog is simply drained by the next tick in expiry order.
+
+`@EnableScheduling` lives in `config/SchedulingConfig.java`. The sweep is safe to run on more than one replica: concurrent sweeps serialise on the same row lock the on-demand path uses, so the second one re-reads, finds a valid token and does nothing.
 
 No `server.port` is set, so the Boot default **8080** applies — corroborated by the OAuth redirect URIs, which hardcode `localhost:8080`.
 
@@ -385,6 +487,48 @@ One trap, and the reason `spring.devtools.restart.additional-paths: config` is s
 
 ---
 
+## Testing
+
+```bash
+./mvnw test                                                    # everything
+./mvnw test -Dtest='com.kksg.applicationServices.scm.**'       # SCM module only
+./mvnw test -Dtest='com.kksg.applicationServices.repository.**' # repository management only
+```
+
+508 tests, all offline except the opt-in group below. Notable suites, and what each exists to catch:
+
+| Suite | Catches |
+|---|---|
+| `scm/seed/SeededOperationRequestTest` | A seeded operation targeting a wrong or removed endpoint. Reads the real `scm/seed/*.json` and asserts the full generated URI — every other engine test builds configuration inline, which is why none of them caught the Bitbucket outage |
+| `scm/common/http/ScmHttpExecutorRedirectTest` | A cross-origin redirect being followed with the user's token attached, and the retry policy widening |
+| `scm/operation/engine/ConfigDrivenScmClientStatusTest` | The provider HTTP status matrix collapsing — 401 vs 403 vs rate-limit-403 vs 404 vs 5xx, and `Retry-After` sanitisation |
+| `scm/connection/service/ScmOAuthTokenExchangerTest` | A refresh failure being misclassified as terminal or transient; a secret reaching an exception message |
+| `scm/connection/service/ScmTokenRefresherTest` | The unbounded refresh loop returning — asserts `isUsable() == false` after a rejected grant |
+| `scm/webhook/service/ScmWebhookServiceTest` | The pipeline's step order (an unverified caller causing a write) and its outcome taxonomy |
+| `scm/event/ScmWebhookEventDispatcherTest` | One consumer's failure starving the others |
+
+### Live provider tests (opt-in)
+
+`scm/live/LiveProviderIntegrationTest` talks to the real GitHub and Bitbucket APIs. **Disabled by default and skipped silently** — it needs live credentials, makes outbound calls, and can fail for reasons unrelated to this codebase. None of that belongs in a build gate.
+
+```bash
+# Bitbucket
+CODEREV_LIVE_SCM=1 \
+CODEREV_LIVE_BITBUCKET_TOKEN=<access token> \
+CODEREV_LIVE_BITBUCKET_WORKSPACE=<workspace slug> \
+  ./mvnw test -Dtest='LiveProviderIntegrationTest'
+
+# GitHub
+CODEREV_LIVE_SCM=1 CODEREV_LIVE_GITHUB_TOKEN=<access token> \
+  ./mvnw test -Dtest='LiveProviderIntegrationTest'
+```
+
+Each provider's group is additionally gated on its own token variable, so supplying one set of credentials runs that provider and skips the other rather than failing it. A read-only token suffices; nothing writes to a provider. **Credentials come from the environment only** — none appear in the file or in any fixture, and nothing is written to disk. Assertions are about HTTP status and response *shape*, never a particular account's repositories, so they pass for any account.
+
+These exist for one reason offline tests cannot cover: unit tests prove the engine resolves whatever template it is given, and only a live call proves the template still points at an endpoint that exists. `removedCrossWorkspaceEndpointIsStillGone` is the sentinel for that class of failure — if Atlassian ever restores `/2.0/repositories`, that failing test is how we find out.
+
+---
+
 ## Known gaps
 
 Beyond the "Not built" rows above, these are behaviours worth knowing before relying on the modules that *are* built.
@@ -402,11 +546,15 @@ Beyond the "Not built" rows above, these are behaviours worth knowing before rel
 
 **SCM**
 
-- Webhook deliveries are stored but never consumed.
+- Webhook deliveries are normalised and dispatched, but **nothing subscribes yet** — Review Orchestration is the intended consumer. Such deliveries are recorded `PROCESSED` with a `SCM_EVENT_NO_CONSUMER` log line.
+- Event dispatch is **synchronous and in-process**. An event in flight is lost if the process dies; the delivery row is the recovery evidence, and there is no automated replay — a stuck `RECEIVED`/`PROCESSING`/`FAILED` row must be replayed by hand. A durable outbox is the next step.
 - The write operations — `CREATE_PR_COMMENT`, `CREATE_PR_REVIEW`, `CREATE_WEBHOOK`, `DELETE_WEBHOOK` — are configured but reachable only internally. The six read operations are exposed by the repository-management module.
-- `OAUTH_TOKEN_REFRESH` is declared per provider but nothing schedules a refresh, so `EXPIRED` connections require manual reconnect.
+- **Bitbucket needs a workspace that cannot be discovered.** See [provider-derived operation parameters](#provider-derived-operation-parameters). An account with no workspace lists nothing, and a workspace whose slug differs from the account name needs `metadata.workspace` set on the connection row — there is no UI for that today.
 - The provider list exposes no signal for whether credentials are configured, so a client cannot disable a Connect action ahead of time — a misconfigured provider fails on click with `SCM_PROVIDER_CONFIGURATION_INVALID`.
 - Bitbucket declares `CREATE_PR_REVIEW` unsupported.
+- No webhook *registration* flow: `CREATE_WEBHOOK` is configured but no route or lifecycle hook calls it, so deliveries only arrive for webhooks created manually at the provider.
+- The token sweep logs its outcome but exports no metrics, so a slow accumulation of transient refresh failures is visible only in logs.
+- OAuth state remains replayable within its 10-minute window; no PKCE.
 
 **Repository management**
 
@@ -415,10 +563,9 @@ Full list in [the feature document](features/repository-management.md#known-gaps
 - **No caching.** Every request calls the provider, so a provider rate limit is the practical ceiling on throughput.
 - **Search reach is bounded** at 500 items by default, because neither provider offers a server-side search on these listings. An absent `totalElements` is the signal that a result set may be incomplete.
 - **`MERGED` is approximate as a filter on GitHub**, where it maps to `closed` at the provider. Individual states are still correct, being resolved from `mergedAt`.
-- No integration test against a live provider; the module's own tests mock the engine.
 
 **Cross-cutting**
 
 - No schema migrations; `ddl-auto: update` only.
-- No tests for the identity module. `src/test` holds the context-load test, SCM unit tests, and the repository-management suite — 245 tests in total.
+- No tests for the identity module. `src/test` holds the context-load test, the SCM suites and the repository-management suite — **508 tests**, of which 2 are the opt-in live groups, skipped by default.
 - `ModelMapperConfig` and `CloudnaryConfig` define unused beans; `spring.mail.*` is configured with no mail code.

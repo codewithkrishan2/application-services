@@ -54,14 +54,35 @@ public class ScmRequestBuilder {
     private static final String BODY_PARAMETER = "body";
 
     /**
+     * Builds the request with no connection-derived defaults.
+     *
+     * <p>Retained for callers that have no connection in hand - the OAuth connect flow's
+     * {@code GET_CURRENT_ACCOUNT} is made before a connection row exists.
+     */
+    public BuiltRequest build(ScmOperationRequest request,
+                              ProviderConfiguration configuration,
+                              com.kksg.applicationServices.scm.operation.service.ResolvedOperation resolved,
+                              String baseUrl,
+                              String accessToken) {
+        return build(request, configuration, resolved, baseUrl, accessToken, Map.of());
+    }
+
+    /**
      * Builds the request and returns it together with the effective parameter map, which the caller
      * needs for the operation context and for building the next page's request.
+     *
+     * @param connectionDefaults parameters the provider declared it can derive from the connection,
+     *                           already resolved by {@code ConnectionParameterResolver}. Applied as
+     *                           <b>defaults only</b> - an explicit caller parameter of the same name
+     *                           always wins, so a connection-scoped default cannot override a request
+     *                           that deliberately addresses a different owner.
      */
     public BuiltRequest build(ScmOperationRequest request,
                              ProviderConfiguration configuration,
                              com.kksg.applicationServices.scm.operation.service.ResolvedOperation resolved,
                              String baseUrl,
-                             String accessToken) {
+                             String accessToken,
+                             Map<String, Object> connectionDefaults) {
 
         RequestConfiguration requestConfiguration = resolved.requestConfiguration();
         String operationLabel = String.valueOf(resolved.operation().getOperationCode());
@@ -69,6 +90,12 @@ public class ScmRequestBuilder {
         Map<String, Object> parameters = new LinkedHashMap<>(request.getParameters());
         if (request.getBody() != null) {
             parameters.put(BODY_PARAMETER, request.getBody());
+        }
+
+        // Before validation, so a parameter the provider can supply from the connection counts as
+        // present and does not fail the required-parameter check.
+        if (connectionDefaults != null) {
+            connectionDefaults.forEach(parameters::putIfAbsent);
         }
 
         validateRequiredParameters(requestConfiguration, parameters, operationLabel);

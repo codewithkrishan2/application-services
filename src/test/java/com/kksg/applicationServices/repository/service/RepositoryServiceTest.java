@@ -49,6 +49,16 @@ class RepositoryServiceTest {
     private static final ScmResourceProvider PROVIDER = new ScmResourceProvider("GITHUB", "GitHub");
     private static final int CONNECTION_ID = 5;
 
+    /**
+     * What a 404 on the <i>listing</i> means.
+     *
+     * <p>Not a missing repository - the request names none. It means the account scope the listing is
+     * made within could not be found, which is the scope derived from the connection on a provider
+     * with no cross-account listing endpoint. Bitbucket's removal of its cross-workspace APIs is what
+     * made this distinction load-bearing.
+     */
+    private static final ScmErrorCode LISTING_NOT_FOUND = ScmErrorCode.SCM_REPOSITORY_SCOPE_NOT_FOUND;
+
     @Mock
     private ScmResourceAccessService accessService;
 
@@ -106,7 +116,7 @@ class RepositoryServiceTest {
     @DisplayName("lists repositories through the LIST_REPOSITORIES operation")
     void listsRepositories() {
         accessGranted();
-        when(runner.run(eq(context), any(), isNull())).thenReturn(ScmResponses.list(
+        when(runner.run(eq(context), any(), eq(LISTING_NOT_FOUND))).thenReturn(ScmResponses.list(
                 ScmOperationCode.LIST_REPOSITORIES,
                 List.of(repository("api"), repository("web")), true));
 
@@ -120,7 +130,7 @@ class RepositoryServiceTest {
         assertThat(page.isHasNext()).isTrue();
 
         ArgumentCaptor<ScmOperationRequest> request = ArgumentCaptor.forClass(ScmOperationRequest.class);
-        verify(runner).run(eq(context), request.capture(), isNull());
+        verify(runner).run(eq(context), request.capture(), eq(LISTING_NOT_FOUND));
         assertThat(request.getValue().getOperation()).isEqualTo(ScmOperationCode.LIST_REPOSITORIES);
     }
 
@@ -128,7 +138,7 @@ class RepositoryServiceTest {
     @DisplayName("an empty account is an empty page, not an error")
     void handlesEmptyRepositoryList() {
         accessGranted();
-        when(runner.run(eq(context), any(), isNull()))
+        when(runner.run(eq(context), any(), eq(LISTING_NOT_FOUND)))
                 .thenReturn(ScmResponses.list(ScmOperationCode.LIST_REPOSITORIES, List.of(), false));
 
         PageResponse<RepositoryResponse> page =
@@ -143,7 +153,7 @@ class RepositoryServiceTest {
     @DisplayName("search narrows the listing")
     void searchNarrowsListing() {
         accessGranted();
-        when(runner.run(eq(context), any(), isNull(), anyBoolean())).thenReturn(ScmResponses.list(
+        when(runner.run(eq(context), any(), eq(LISTING_NOT_FOUND), anyBoolean())).thenReturn(ScmResponses.list(
                 ScmOperationCode.LIST_REPOSITORIES,
                 List.of(repository("auth-service"), repository("billing"), repository("authz")), false));
 
@@ -272,7 +282,7 @@ class RepositoryServiceTest {
     @DisplayName("an unsupported operation surfaces as SCM_OPERATION_NOT_SUPPORTED, a 400")
     void propagatesUnsupportedOperation() {
         accessGranted();
-        when(runner.run(eq(context), any(), isNull()))
+        when(runner.run(eq(context), any(), eq(LISTING_NOT_FOUND)))
                 .thenThrow(new ScmException(ScmErrorCode.SCM_OPERATION_NOT_SUPPORTED));
 
         assertThatThrownBy(() ->
@@ -289,7 +299,7 @@ class RepositoryServiceTest {
     @DisplayName("a provider API failure surfaces as a 502, not a 500")
     void propagatesProviderApiError() {
         accessGranted();
-        when(runner.run(eq(context), any(), isNull()))
+        when(runner.run(eq(context), any(), eq(LISTING_NOT_FOUND)))
                 .thenThrow(new ScmException(ScmErrorCode.SCM_PROVIDER_API_ERROR));
 
         assertThatThrownBy(() ->
@@ -307,7 +317,7 @@ class RepositoryServiceTest {
     @DisplayName("provider rate limiting surfaces as 429 so the UI can say so")
     void propagatesRateLimiting() {
         accessGranted();
-        when(runner.run(eq(context), any(), isNull()))
+        when(runner.run(eq(context), any(), eq(LISTING_NOT_FOUND)))
                 .thenThrow(new ScmException(ScmErrorCode.SCM_PROVIDER_RATE_LIMITED));
 
         assertThatThrownBy(() ->
@@ -326,7 +336,7 @@ class RepositoryServiceTest {
     @DisplayName("an expired credential surfaces as 401 so the client can offer reconnect")
     void propagatesExpiredCredential() {
         accessGranted();
-        when(runner.run(eq(context), any(), isNull()))
+        when(runner.run(eq(context), any(), eq(LISTING_NOT_FOUND)))
                 .thenThrow(new ScmException(ScmErrorCode.SCM_CONNECTION_EXPIRED));
 
         assertThatThrownBy(() ->

@@ -5,6 +5,7 @@ import com.kksg.applicationServices.scm.common.exception.ScmErrorCode;
 import com.kksg.applicationServices.scm.common.exception.ScmException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -70,8 +71,23 @@ public class GlobalExceptionHandler {
             log.warn("SCM exception [{}]: {}", errorCode, ex.getMessage());
         }
 
-        return new ResponseEntity<>(
-                ApiResponse.error(ex.getMessage(), Map.of("code", errorCode.name())), status);
+        Map<String, String> errors = new HashMap<>();
+        errors.put("code", errorCode.name());
+
+        // Only a rate limit carries one, and only when the provider volunteered it. Echoed into the
+        // body as well as the header because this API is consumed by a server-side wrapper that reads
+        // the envelope; a header alone would be dropped before it reached the code that renders the
+        // message.
+        Integer retryAfter = ex.getRetryAfterSeconds();
+        if (retryAfter != null) {
+            errors.put("retryAfterSeconds", String.valueOf(retryAfter));
+        }
+
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(status);
+        if (retryAfter != null) {
+            response.header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfter));
+        }
+        return response.body(ApiResponse.error(ex.getMessage(), errors));
     }
 
     @ExceptionHandler(BadCredentialsException.class)
