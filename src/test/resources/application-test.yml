@@ -8,11 +8,18 @@ spring:
       ddl-auto: create-drop
     show-sql: true
 
+# 64 bytes decoded, which is the minimum for HS512. The previous value decoded to 63 and would now fail
+# startup - the point of that check being that a short key silently weakened the signature instead.
 security:
   jwt:
-    secret: dGVzdC1zZWNyZXQta2V5LWZvci11bml0LXRlc3RpbmctcHVycG9zZXMtb25seS1taW5pbXVtLTI1Ni1iaXRz
+    secret: Y29kZXJldi10ZXN0LW9ubHktc2lnbmluZy1rZXktZG8tbm90LXVzZS1hbnl3aGVyZS1lbHNlLTY0LWJ5dGVzIQ==
     access-token-expiration: 900
     refresh-token-expiration: 2592000
+
+app:
+  security:
+    allowed-origins: http://localhost:3000
+    expose-api-docs: true
 
 github:
   oauth:

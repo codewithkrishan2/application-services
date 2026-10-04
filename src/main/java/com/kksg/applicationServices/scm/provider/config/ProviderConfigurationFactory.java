@@ -1,5 +1,6 @@
 package com.kksg.applicationServices.scm.provider.config;
 
+import com.kksg.applicationServices.scm.common.http.OutboundUrlPolicy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kksg.applicationServices.scm.common.exception.ScmErrorCode;
 import com.kksg.applicationServices.scm.common.exception.ScmException;
@@ -117,9 +118,13 @@ public class ProviderConfigurationFactory {
         if (api == null || api.baseUrl() == null || api.baseUrl().isBlank()) {
             throw invalid(providerCode, "api.baseUrl is required");
         }
-        String baseUrl = api.baseUrl().trim();
-        if (!baseUrl.startsWith("https://") && !baseUrl.startsWith("http://")) {
-            throw invalid(providerCode, "api.baseUrl must be an absolute http(s) URL");
+        // A prefix check only proved the string looked like a URL. Since this value decides where outbound
+        // requests carrying a user's OAuth token are sent, it is held to the same standard as a per-connection
+        // override: absolute http(s), no embedded credentials, and not pointing inside our own network.
+        try {
+            OutboundUrlPolicy.requireAllowed(api.baseUrl(), "api.baseUrl");
+        } catch (IllegalArgumentException ex) {
+            throw invalid(providerCode, ex.getMessage());
         }
         if (api.authentication() != null
                 && api.authentication().schemeOrDefault() == ProviderConfiguration.AuthScheme.HEADER
@@ -162,7 +167,15 @@ public class ProviderConfigurationFactory {
         if (isBlank(webhook.eventHeader())) {
             throw invalid(providerCode, "webhook.eventHeader is required to identify the event");
         }
-        if (webhook.signatureAlgorithmOrDefault() != ProviderConfiguration.SignatureAlgorithm.NONE) {
+        // Required rather than defaulted: a provider that declares a webhook block but omits the algorithm
+        // would otherwise be unable to accept any delivery at runtime (the verifier fails closed), and a
+        // startup error naming the field is far easier to diagnose than deliveries silently 401-ing.
+        ProviderConfiguration.SignatureAlgorithm algorithm = webhook.configuredSignatureAlgorithm()
+                .orElseThrow(() -> invalid(providerCode,
+                        "webhook.signatureAlgorithm is required; set NONE explicitly only for a provider "
+                                + "that does not sign its deliveries"));
+
+        if (algorithm != ProviderConfiguration.SignatureAlgorithm.NONE) {
             if (isBlank(webhook.signatureHeader())) {
                 throw invalid(providerCode, "webhook.signatureHeader is required when a signature algorithm is set");
             }

@@ -17,7 +17,16 @@ public interface UserLoginRepository extends JpaRepository<UserLogin, Integer> {
 
     Optional<UserLogin> findByProviderAndProviderUserId(LoginProvider provider, String providerUserId);
 
-    Optional<UserLogin> findByAppRefreshToken(String appRefreshToken);
+    /** Looks up the holder of a refresh token by its digest; the token itself is never stored. */
+    Optional<UserLogin> findByAppRefreshTokenHash(String appRefreshTokenHash);
+
+    /**
+     * Looks up a login by the digest of the token it most recently rotated away from.
+     *
+     * <p>A match means a superseded token was presented, which is the signature of a stolen credential
+     * being replayed - the legitimate client has already moved on to the new one.
+     */
+    Optional<UserLogin> findByAppRefreshTokenPreviousHash(String appRefreshTokenPreviousHash);
 
     @Modifying
     @Query("UPDATE UserLogin ul SET ul.appRefreshTokenRevoked = true, ul.appRefreshTokenRevokedAt = CURRENT_TIMESTAMP WHERE ul.user = :user AND ul.appRefreshTokenRevoked = false")

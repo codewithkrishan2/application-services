@@ -1,5 +1,6 @@
 package com.kksg.applicationServices.scm.secret;
 
+import org.springframework.core.env.Environment;
 import com.kksg.applicationServices.scm.common.exception.ScmErrorCode;
 import com.kksg.applicationServices.scm.common.exception.ScmException;
 import com.kksg.applicationServices.scm.secret.entity.ScmSecret;
@@ -16,6 +17,9 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Set;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,13 +28,13 @@ import java.util.UUID;
  * Default {@link ScmSecretStore}: AES-256-GCM envelope encryption with ciphertext held in
  * {@code scm_secrets}.
  *
- * <p><b>Why this exists rather than reusing {@code utils.EncryptionUtil}.</b> That helper uses a
- * hardcoded 16-character key compiled into the source, and {@code Cipher.getInstance("AES")} which
- * resolves to AES/ECB/PKCS5Padding. ECB is deterministic, so equal plaintexts produce equal
- * ciphertexts and it provides no integrity guarantee at all. Neither property is acceptable for
- * long-lived OAuth credentials, so this store uses an authenticated mode with a per-record random
- * IV and an externally supplied key. {@code EncryptionUtil} is left untouched because Module 1 code
- * depends on it; migrating it is out of scope for this module.
+ * <p><b>Why an authenticated mode with an external key.</b> This replaced an earlier
+ * {@code utils.EncryptionUtil} helper that used a hardcoded 16-character key compiled into the source
+ * and {@code Cipher.getInstance("AES")}, which resolves to AES/ECB/PKCS5Padding. ECB is deterministic,
+ * so equal plaintexts produce equal ciphertexts, and it provides no integrity guarantee at all - a
+ * ciphertext can be tampered with and the only symptom is a padding error. Neither property is
+ * acceptable for long-lived OAuth credentials. That helper has since been deleted; this store uses
+ * AES-GCM with a per-record random IV and a key supplied through configuration.
  *
  * <p><b>This is the MVP backend, not the recommended production one.</b> The key sits in
  * application configuration, so an attacker with both database access and configuration access can
@@ -59,15 +63,22 @@ public class EncryptedDatabaseSecretStore implements ScmSecretStore {
      */
     private static final String DEVELOPMENT_KEY = "c2NtLWRldi1vbmx5LWtleS0zMi1ieXRlcy1sb25nISE=";
 
+    /** Profiles in which the built-in development key is tolerated. */
+    private static final Set<String> DEVELOPMENT_PROFILES = Set.of("local", "dev", "test");
+
     private final ScmSecretRepository secretRepository;
     private final ScmSecretProperties properties;
+    private final Environment environment;
     private final SecureRandom secureRandom = new SecureRandom();
 
     private SecretKey secretKey;
 
-    public EncryptedDatabaseSecretStore(ScmSecretRepository secretRepository, ScmSecretProperties properties) {
+    public EncryptedDatabaseSecretStore(ScmSecretRepository secretRepository,
+                                        ScmSecretProperties properties,
+                                        Environment environment) {
         this.secretRepository = secretRepository;
         this.properties = properties;
+        this.environment = environment;
     }
 
     /**
@@ -96,12 +107,34 @@ public class EncryptedDatabaseSecretStore implements ScmSecretStore {
                             .formatted(EXPECTED_KEY_LENGTH_BYTES, keyBytes.length));
         }
         if (DEVELOPMENT_KEY.equals(configured.trim())) {
+            // A warning was not enough. This key is committed to the repository, so running on it means
+            // every stored provider credential is encrypted under a key the public holds - which is
+            // indistinguishable from storing them in cleartext. Outside an explicitly non-production
+            // profile, refuse to start rather than offer encryption that protects nothing.
+            if (!isDevelopmentProfileActive()) {
+                throw new IllegalStateException(
+                        "scm.secrets.encryption-key is still the built-in development key. Set "
+                                + "SCM_SECRETS_ENCRYPTION_KEY to a unique Base64-encoded 256-bit key "
+                                + "(openssl rand -base64 32), or run with the local, dev or test profile.");
+            }
             log.warn("SCM_SECRET_STORE_INSECURE_KEY: using the built-in development encryption key. "
-                    + "Set SCM_SECRETS_ENCRYPTION_KEY before handling real provider credentials.");
+                    + "Acceptable only because a development profile is active.");
         }
 
         this.secretKey = new SecretKeySpec(keyBytes, KEY_ALGORITHM);
         log.info("SCM_SECRET_STORE_READY: algorithm={}, keyVersion={}", ALGORITHM, properties.getKeyVersion());
+    }
+
+    /**
+     * Whether an explicitly non-production profile is active.
+     *
+     * <p>Keyed on an opt-in list rather than "is prod absent", because the dangerous default has to be the
+     * safe one: a deployment that forgets to name its profile gets the strict behaviour.
+     */
+    private boolean isDevelopmentProfileActive() {
+        return Arrays.stream(environment.getActiveProfiles())
+                .map(profile -> profile.toLowerCase(Locale.ROOT))
+                .anyMatch(DEVELOPMENT_PROFILES::contains);
     }
 
     @Override

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Typed, validated view over the {@code scm_providers.configuration} JSONB document.
@@ -226,8 +227,21 @@ public record ProviderConfiguration(
             String actionPath,
             String secretProperty) {
 
-        public SignatureAlgorithm signatureAlgorithmOrDefault() {
-            return signatureAlgorithm != null ? signatureAlgorithm : SignatureAlgorithm.NONE;
+        /**
+         * The signature scheme this provider's deliveries must carry.
+         *
+         * <p>Returns empty when the provider row says nothing about signing, and that distinction is the
+         * point: an absent algorithm must never be read as "this provider does not sign". It previously
+         * defaulted to {@link SignatureAlgorithm#NONE}, which the verifier treats as "accept without
+         * checking" - so a provider row with no {@code webhook} block, or one where the field was simply
+         * omitted, silently accepted any unsigned POST as authentic. Callers must treat empty as
+         * unverifiable and reject.
+         *
+         * <p>{@link SignatureAlgorithm#NONE} remains available as an explicit, validated opt-out for
+         * providers that genuinely do not sign deliveries.
+         */
+        public Optional<SignatureAlgorithm> configuredSignatureAlgorithm() {
+            return Optional.ofNullable(signatureAlgorithm);
         }
 
         public String signaturePrefixOrEmpty() {

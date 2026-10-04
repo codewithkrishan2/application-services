@@ -45,10 +45,19 @@ public class HmacWebhookSignatureVerifier implements WebhookSignatureVerifier {
                           ProviderConfiguration.Webhook webhookConfiguration,
                           String secret) {
 
-        ProviderConfiguration.SignatureAlgorithm algorithm = webhookConfiguration.signatureAlgorithmOrDefault();
+        ProviderConfiguration.SignatureAlgorithm algorithm =
+                webhookConfiguration.configuredSignatureAlgorithm().orElse(null);
 
+        if (algorithm == null) {
+            // Unconfigured is not the same as unsigned. A provider row with no webhook block, or one
+            // missing this field, cannot have its deliveries verified, so the only safe answer is no.
+            log.error("SCM_WEBHOOK_SIGNATURE_UNVERIFIABLE: no webhook.signatureAlgorithm configured for this "
+                    + "provider, rejecting delivery");
+            return false;
+        }
         if (algorithm == ProviderConfiguration.SignatureAlgorithm.NONE) {
-            log.warn("SCM_WEBHOOK_SIGNATURE_SKIPPED: provider is configured with signatureAlgorithm=NONE");
+            log.warn("SCM_WEBHOOK_SIGNATURE_SKIPPED: provider is explicitly configured with "
+                    + "signatureAlgorithm=NONE");
             return true;
         }
         if (secret == null || secret.isBlank()) {

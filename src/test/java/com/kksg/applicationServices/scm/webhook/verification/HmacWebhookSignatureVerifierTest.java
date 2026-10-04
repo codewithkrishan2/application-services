@@ -130,13 +130,25 @@ class HmacWebhookSignatureVerifierTest {
     }
 
     @Test
-    @DisplayName("a webhook config with no algorithm defaults to NONE")
-    void defaultsToNoneWhenAlgorithmAbsent() {
+    @DisplayName("rejects a delivery when no signature algorithm is configured")
+    void rejectsWhenAlgorithmAbsent() {
+        // Regression guard. This previously defaulted to NONE, which the verifier treats as "accept
+        // without checking" - so a provider row that merely omitted the field accepted forged, unsigned
+        // deliveries on a public endpoint. Unconfigured must mean unverifiable, and unverifiable must
+        // mean rejected.
         ProviderConfiguration.Webhook noAlgorithm = new ProviderConfiguration.Webhook(
                 null, null, null, "x-event-key", "x-request-uuid", null, null);
 
-        assertThat(noAlgorithm.signatureAlgorithmOrDefault())
-                .isEqualTo(ProviderConfiguration.SignatureAlgorithm.NONE);
+        assertThat(noAlgorithm.configuredSignatureAlgorithm()).isEmpty();
+        assertThat(verifier.verify(BODY, Map.of(), noAlgorithm, SECRET)).isFalse();
+    }
+
+    @Test
+    @DisplayName("rejects a delivery when the provider has no webhook configuration at all")
+    void rejectsWhenWebhookBlockAbsent() {
+        ProviderConfiguration noWebhook = new ProviderConfiguration(null, null, null, null);
+
+        assertThat(verifier.verify(BODY, Map.of(), noWebhook.webhookOrEmpty(), SECRET)).isFalse();
     }
 
     @Test

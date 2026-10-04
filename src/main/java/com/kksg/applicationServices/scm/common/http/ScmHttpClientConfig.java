@@ -8,6 +8,7 @@ import org.springframework.web.client.ResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.time.Duration;
 
 /**
@@ -32,13 +33,32 @@ public class ScmHttpClientConfig {
 
     @Bean
     public RestTemplate scmRestTemplate(ScmHttpProperties properties) {
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        SimpleClientHttpRequestFactory requestFactory = new NonRedirectingRequestFactory();
         requestFactory.setConnectTimeout(Duration.ofMillis(properties.getConnectTimeoutMs()));
         requestFactory.setReadTimeout(Duration.ofMillis(properties.getReadTimeoutMs()));
 
         RestTemplate restTemplate = new RestTemplate(requestFactory);
         restTemplate.setErrorHandler(new NonThrowingErrorHandler());
         return restTemplate;
+    }
+
+    /**
+     * Refuses to follow redirects.
+     *
+     * <p>{@code HttpURLConnection} follows them by default and replays the original request headers on a
+     * same-protocol redirect - including the {@code Authorization} header carrying the user's provider
+     * token. A provider endpoint that answered {@code 302 Location: http://attacker/} would therefore be
+     * handed that credential, and nothing in this module would notice. Since every provider API call here
+     * targets a documented endpoint that has no reason to redirect, a 3xx is treated as the anomaly it is
+     * and surfaced to the engine as a failure.
+     */
+    private static final class NonRedirectingRequestFactory extends SimpleClientHttpRequestFactory {
+
+        @Override
+        protected void prepareConnection(HttpURLConnection connection, String httpMethod) throws IOException {
+            super.prepareConnection(connection, httpMethod);
+            connection.setInstanceFollowRedirects(false);
+        }
     }
 
     /**

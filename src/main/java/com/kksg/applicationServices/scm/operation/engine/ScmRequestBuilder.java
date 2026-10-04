@@ -184,7 +184,7 @@ public class ScmRequestBuilder {
 
         requestConfiguration.headersOrEmpty().forEach((name, template) ->
                 PlaceholderResolver.resolveOptional(template, parameters)
-                        .ifPresent(value -> headers.put(name, value)));
+                        .ifPresent(value -> headers.put(name, sanitizeHeaderValue(name, value))));
 
         ProviderConfiguration.Authentication authentication = configuration.apiOrEmpty().authenticationOrDefault();
         if (accessToken != null && !accessToken.isBlank()
@@ -192,6 +192,23 @@ public class ScmRequestBuilder {
             headers.put(authentication.headerOrDefault(), authentication.valuePrefixOrDefault() + accessToken);
         }
         return headers;
+    }
+
+    /**
+     * Refuses a header value containing a line break.
+     *
+     * <p>Header templates are resolved from the same caller-supplied parameter map as paths and bodies, so a
+     * value with CR or LF in it would be written into an outbound request header. Depending on the client,
+     * that either errors or injects additional headers into the request - the classic header-splitting
+     * primitive. Rejecting rather than stripping keeps the failure visible: silently altering a credential
+     * or content header would be worse than refusing the call.
+     */
+    private String sanitizeHeaderValue(String name, String value) {
+        if (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) {
+            throw new ScmException(ScmErrorCode.SCM_OPERATION_PARAMETER_MISSING,
+                    "header '%s' resolved to a value containing a line break".formatted(name));
+        }
+        return value;
     }
 
     private Object buildBody(RequestConfiguration requestConfiguration,
@@ -254,12 +271,31 @@ public class ScmRequestBuilder {
         Map<String, Object> encoded = new LinkedHashMap<>();
         parameters.forEach((key, value) -> {
             if (value instanceof String text) {
+                rejectDotSegment(key, text);
                 encoded.put(key, UriUtils.encodePathSegment(text, StandardCharsets.UTF_8));
             } else {
                 encoded.put(key, value);
             }
         });
         return encoded;
+    }
+
+    /**
+     * Rejects {@code .} and {@code ..} as path parameter values.
+     *
+     * <p>Percent-encoding a path segment does not help here: {@code .} is an unreserved character, so a
+     * value of {@code ..} passes through untouched. Neither this client nor {@code HttpURLConnection}
+     * normalizes dot segments, so the provider's own server resolves them - meaning a repository named
+     * {@code ..} would turn {@code /repos/{{owner}}/{{repo}}/pulls} into a request one level up the path,
+     * against an endpoint the caller was never authorized for. The host cannot be changed this way, which
+     * bounds the impact, but a parameter should not be able to move the request at all.
+     */
+    private void rejectDotSegment(String parameterName, String value) {
+        String trimmed = value.trim();
+        if (".".equals(trimmed) || "..".equals(trimmed)) {
+            throw new ScmException(ScmErrorCode.SCM_OPERATION_PARAMETER_MISSING,
+                    "parameter '%s' has an invalid value".formatted(parameterName));
+        }
     }
 
     private HttpMethod resolveMethod(String httpMethod, String operationLabel) {

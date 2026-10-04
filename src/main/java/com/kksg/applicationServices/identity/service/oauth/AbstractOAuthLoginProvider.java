@@ -20,6 +20,8 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -80,7 +82,18 @@ public abstract class AbstractOAuthLoginProvider implements OAuthLoginProvider {
     private final RestTemplate restTemplate;
 
     protected AbstractOAuthLoginProvider() {
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        // Redirects are not followed. HttpURLConnection follows them by default and replays the original
+        // headers, which on the token request means replaying HTTP Basic client credentials - and on the
+        // profile request, the user's access token - to whatever host a redirect names. A provider's token
+        // and profile endpoints have no reason to redirect, so a 3xx is treated as a failure.
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory() {
+            @Override
+            protected void prepareConnection(HttpURLConnection connection, String httpMethod)
+                    throws IOException {
+                super.prepareConnection(connection, httpMethod);
+                connection.setInstanceFollowRedirects(false);
+            }
+        };
         requestFactory.setConnectTimeout(CONNECT_TIMEOUT_MS);
         requestFactory.setReadTimeout(READ_TIMEOUT_MS);
         this.restTemplate = new RestTemplate(requestFactory);

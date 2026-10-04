@@ -45,10 +45,20 @@ spring:
           starttls:
             enable: true
 
+# ---------------------------------------------------------------------------
 # Security / JWT
+#
+# No default for the signing key, deliberately. It previously carried a committed literal, which meant
+# every environment that forgot to set JWT_SECRET shared a key that is public to anyone with repository
+# access - and holding that key is enough to mint a valid token for any user id. Startup now fails with a
+# clear message instead, which is the only safe behaviour: a service that cannot verify identity must not
+# accept traffic. JwtTokenProvider also rejects a key shorter than 64 bytes, as HS512 requires.
+#
+# Generate one with: openssl rand -base64 64
+# ---------------------------------------------------------------------------
 security:
   jwt:
-    secret: ${JWT_SECRET:BkJxqiVyEijorcsnRlOyCrWSq26My/I5rkRlwR1YJDh03qByNs1U7yx3qtaPn4V/BXayh51EKZlTW6MuZ2NDHNSZrD8nuo3K7NFcS1KoThQ=}
+    secret: ${JWT_SECRET:}
     access-token-expiration: ${JWT_ACCESS_TOKEN_EXPIRATION:900}
     refresh-token-expiration: ${JWT_REFRESH_TOKEN_EXPIRATION:2592000}
 
@@ -60,11 +70,16 @@ security:
 #
 # The redirect URI must be registered with the provider exactly as written, and must point at
 # /api/v1/oauth/{provider}/callback, because that is the path the controllers expose.
+#
+# Client secrets have no defaults. They are credentials, and a default is how a credential ends up in
+# version control. Local development values live in application-local.yml; everything else supplies them
+# through the environment. A missing secret produces a readable error at the start of the sign-in flow
+# rather than an opaque rejection from the provider.
 # ---------------------------------------------------------------------------
 github:
   oauth:
-    client-id: ${GITHUB_CLIENT_ID:Ov23linGo4vogHg5ckk9}
-    client-secret: ${GITHUB_CLIENT_SECRET:d1f7491dde83b450f86e74b5bf27b67f7ac1e908}
+    client-id: ${GITHUB_CLIENT_ID:}
+    client-secret: ${GITHUB_CLIENT_SECRET:}
     redirect-uri: ${GITHUB_REDIRECT_URI:http://localhost:8080/coderev/api/v1/oauth/github/callback}
 
 bitbucket:
@@ -73,13 +88,23 @@ bitbucket:
     # chosen in Bitbucket's consumer settings rather than in the authorization request, so no scope list
     # appears here. The consumer needs at least the Account (email) permission for sign-in to resolve a
     # user, and its callback URL must equal the redirect-uri below.
-    client-id: ${BITBUCKET_CLIENT_ID:7qpM2ib8tGOout0KzbEUva025uEPGtfL}
-    client-secret: ${BITBUCKET_CLIENT_SECRET:ATOAjW2WrYOkdRfaHca-8z9MN06PcKBBhwVfFMc4wBwnEws1ki6YzvELOaachDaWK2flC7B496DC}
+    client-id: ${BITBUCKET_CLIENT_ID:}
+    client-secret: ${BITBUCKET_CLIENT_SECRET:}
     redirect-uri: ${BITBUCKET_REDIRECT_URI:http://localhost:8080/coderev/api/v1/oauth/bitbucket/callback}
 
 # Application
 app:
   frontend-url: ${FRONTEND_URL:http://localhost:3000}
+
+  security:
+    # Origins allowed to call this API from a browser, comma separated. Empty means none, which is correct
+    # for this deployment: the Next.js frontend calls the API from its server, so no browser ever makes a
+    # cross-origin request here. Wildcards are rejected at startup rather than accepted quietly.
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+
+    # Whether /v3/api-docs/** and Swagger UI are readable without authentication. The schema enumerates
+    # every route and parameter, so it stays off unless a profile turns it on.
+    expose-api-docs: ${EXPOSE_API_DOCS:false}
 
 # ---------------------------------------------------------------------------
 # Module 2 - SCM Provider Integration
@@ -112,6 +137,12 @@ scm:
     # Providers with seed_managed = false are left untouched.
     enabled: ${SCM_SEED_ENABLED:true}
 
+  webhook:
+    # Largest inbound delivery body accepted. The webhook endpoint is unauthenticated at the HTTP layer
+    # (authenticity comes from the HMAC signature), and the body is buffered whole before that signature
+    # can be checked, so it needs a bound that does not depend on the caller being honest.
+    max-request-bytes: ${SCM_WEBHOOK_MAX_REQUEST_BYTES:1048576}
+
   providers:
     github:
       client-id: ${SCM_GITHUB_CLIENT_ID:${GITHUB_CLIENT_ID:}}
@@ -129,12 +160,16 @@ scm:
       webhook-secret: ${SCM_BITBUCKET_WEBHOOK_SECRET:}
 
 # Cloudinary
+#
+# The API secret had a committed default and must be treated as compromised and rotated. Blank defaults
+# mean the client is constructed unconfigured and fails when first used, which is preferable to shipping a
+# working credential in the repository. Nothing in the application calls Cloudinary yet.
 config:
   cloudinary:
     cloud:
-      name: ${CLOUDINARY_CLOUD_NAME:djzufbvhc}
-      key: ${CLOUDINARY_CLOUD_KEY:376754654687596}
-      secret: ${CLOUDINARY_CLOUD_SECRET:ocRrHWoy44hDxYDi_nUrHlhc7cE}
+      name: ${CLOUDINARY_CLOUD_NAME:}
+      key: ${CLOUDINARY_CLOUD_KEY:}
+      secret: ${CLOUDINARY_CLOUD_SECRET:}
 
 # SpringDoc
 springdoc:

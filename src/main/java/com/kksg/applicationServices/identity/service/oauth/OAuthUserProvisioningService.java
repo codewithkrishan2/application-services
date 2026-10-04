@@ -86,8 +86,15 @@ public class OAuthUserProvisioningService {
     }
 
     /**
-     * One row per (user, provider), matching the table's unique constraint. The provider's refresh token
-     * and expiry are stored only when the provider issues them: GitHub does not, Bitbucket does.
+     * One row per (user, provider), matching the table's unique constraint.
+     *
+     * <p><b>The provider's access and refresh tokens are deliberately not persisted.</b> Sign-in needs them
+     * only for the few seconds it takes to read the account and its email, and nothing in the application
+     * ever read them back: calls to a provider's API are made by the SCM module, which holds its own copies
+     * encrypted at rest. Keeping a second, unencrypted copy of a repository-scoped credential here bought
+     * nothing and was the largest piece of sensitive data in this table.
+     *
+     * <p>Only the grant's expiry is kept, as a record of when the user last consented.
      */
     private UserLogin upsertUserLogin(LoginProvider provider,
                                       User user,
@@ -102,10 +109,6 @@ public class OAuthUserProvisioningService {
                 });
 
         userLogin.setProviderUserId(profile.providerUserId());
-        userLogin.setAccessToken(tokens.accessToken());
-        if (tokens.refreshToken() != null) {
-            userLogin.setRefreshToken(tokens.refreshToken());
-        }
         userLogin.setExpiresAt(tokens.expiresAt());
 
         return userLoginRepository.save(userLogin);

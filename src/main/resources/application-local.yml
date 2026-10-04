@@ -10,11 +10,21 @@ spring:
       hibernate:
         format_sql: true
 
+# Local-only signing key. It is committed, so it is a development value by definition: treat any token it
+# signed as public and never reuse it anywhere real. The deployed key comes from JWT_SECRET.
 security:
   jwt:
     secret: BkJxqiVyEijorcsnRlOyCrWSq26My/I5rkRlwR1YJDh03qByNs1U7yx3qtaPn4V/BXayh51EKZlTW6MuZ2NDHNSZrD8nuo3K7NFcS1KoThQ=
     access-token-expiration: 900
     refresh-token-expiration: 2592000
+
+app:
+  security:
+    # The frontend does not need this - it calls the API from its server - but configuring it locally keeps
+    # the cross-origin policy exercised rather than only theoretical.
+    allowed-origins: http://localhost:3000
+    # Swagger UI is useful while developing and must stay off everywhere else.
+    expose-api-docs: true
 
 github:
   oauth:

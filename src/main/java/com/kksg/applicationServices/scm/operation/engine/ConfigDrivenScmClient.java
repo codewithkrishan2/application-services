@@ -1,5 +1,6 @@
 package com.kksg.applicationServices.scm.operation.engine;
 
+import com.kksg.applicationServices.scm.common.http.OutboundUrlPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kksg.applicationServices.scm.adapter.ScmAdapterRegistry;
@@ -210,9 +211,18 @@ public class ConfigDrivenScmClient implements ScmClient {
         if (connection != null && connection.getMetadata() != null) {
             Object override = connection.getMetadata().get(METADATA_BASE_URL);
             if (override instanceof String text && !text.isBlank()) {
-                return text.trim();
+                // Validated on use, not merely on write. This value is per-connection metadata rather than
+                // reviewed provider configuration, and it decides the destination of a request that carries
+                // the user's bearer token - so it is the one place an SSRF would be introduced.
+                try {
+                    return OutboundUrlPolicy.requireAllowed(text, "connection metadata baseUrl");
+                } catch (IllegalArgumentException ex) {
+                    throw new ScmException(ScmErrorCode.SCM_PROVIDER_CONFIGURATION_INVALID, ex.getMessage());
+                }
             }
         }
+        // The provider's own base URL was already checked when the configuration was loaded, so it is not
+        // re-resolved here: that would add a DNS lookup to every provider call for no added safety.
         return configuration.apiOrEmpty().baseUrl();
     }
 
