@@ -31,3 +31,9 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Local secrets ###
+# Spring Boot loads ./config/ automatically at higher precedence than the classpath, which makes
+# it the natural home for credentials that must not be committed. Ignoring the whole directory
+# rather than one filename so a future application-local-*.yml cannot be added by accident.
+/config/

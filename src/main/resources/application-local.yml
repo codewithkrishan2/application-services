@@ -10,6 +10,17 @@ spring:
       hibernate:
         format_sql: true
 
+  # Watch ./config/ for restart triggers.
+  #
+  # Devtools only restarts when something on the classpath changes, and ./config/ deliberately is
+  # not on the classpath - it is a file-system config location that overrides it. Without this,
+  # editing a credential in config/application-local.yml changes nothing in the running app, and
+  # the next connect attempt fails using the credential loaded at the last restart. That is a
+  # genuinely confusing failure, because the file on disk is already correct.
+  devtools:
+    restart:
+      additional-paths: config
+
 # Local-only signing key. It is committed, so it is a development value by definition: treat any token it
 # signed as public and never reuse it anywhere real. The deployed key comes from JWT_SECRET.
 security:
@@ -41,23 +52,41 @@ bitbucket:
 
 # Module 2 - SCM Provider Integration (local development)
 #
-# Reuses the Module 1 GitHub OAuth app credentials so a local GitHub connection can be
-# exercised without registering a second app. Note that the SCM connect flow requests
-# broader scopes (repo, admin:repo_hook) than Module 1 sign-in does, so the OAuth app
-# must be permitted to grant them and its callback list must include the SCM callback URL.
+# Both providers use their own dedicated "CodeRev SCM" OAuth application, separate from the
+# Module 1 sign-in apps. Keeping them apart is deliberate: the SCM flow requests far broader
+# consent than sign-in does - repository contents, pull request writes and webhook management
+# against GitHub, and repository/pullrequest:write/webhook against Bitbucket - whereas sign-in
+# only reads an identity. Sharing one app would silently widen what signing in can grant.
 #
-# Bitbucket is intentionally left blank: attempting to connect it locally fails fast with
-# SCM_PROVIDER_CONFIGURATION_INVALID naming the missing property, which is clearer than a
-# placeholder credential producing an opaque 401 from the provider.
+# Each app's Redirect/Callback URI must stay byte-identical to the redirect-uri below. Both
+# providers compare the value sent in the authorization request against what is registered, and
+# reject the request before the user is ever prompted if they differ.
+#
+# Bitbucket cannot share the sign-in consumer in any case.
+# It cannot be shared: Bitbucket matches the request's redirect_uri against the client's own
+# Callback URLs, and the SCM callback path is not a suffix of the sign-in one. The SCM client
+# also needs broader permissions - repository, pullrequest:write and webhook - than sign-in,
+# which only reads the account.
+#
+# Its secret is deliberately absent from this file, because this file is tracked in git. It is
+# supplied by the untracked ./config/application-local.yml override, which Spring Boot loads
+# automatically for this profile at higher precedence than the classpath. Set
+# SCM_BITBUCKET_CLIENT_SECRET in the environment instead if you prefer.
+#
+# Without it, connecting fails fast with SCM_PROVIDER_CONFIGURATION_INVALID naming the exact
+# missing property, which is clearer than a placeholder credential producing an opaque 401.
 scm:
   providers:
     github:
-      client-id: Ov23linGo4vogHg5ckk9
-      client-secret: d1f7491dde83b450f86e74b5bf27b67f7ac1e908
+      # "CodeRev SCM" OAuth app. Not a secret: this value travels in the authorization URL the
+      # browser is sent to. The matching secret lives in ./config/application-local.yml.
+      client-id: Ov23li8w74hPrDSSKnXg
       redirect-uri: http://localhost:8080/coderev/api/v1/scm/connections/callback/GITHUB
       webhook-secret: local-dev-github-webhook-secret
 
     bitbucket:
+      # "CodeRev SCM" OAuth client. Not a secret, same reasoning as GitHub above.
+      client-id: VwGnjjyuqPyoexzP06F4vzElSvnpzmLT
       redirect-uri: http://localhost:8080/coderev/api/v1/scm/connections/callback/BITBUCKET
       webhook-secret: local-dev-bitbucket-webhook-secret
 
