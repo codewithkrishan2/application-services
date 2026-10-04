@@ -159,6 +159,28 @@ scm:
       redirect-uri: ${SCM_BITBUCKET_REDIRECT_URI:http://localhost:8080/coderev/api/v1/scm/connections/callback/BITBUCKET}
       webhook-secret: ${SCM_BITBUCKET_WEBHOOK_SECRET:}
 
+# Repository Management (Module 3)
+#
+# Bounds on work that is otherwise driven by how large a user's account is. Both groups exist because the
+# underlying operations are unbounded by nature: a repository search over thousands of repositories, and a
+# diff for a lockfile update. See RepositoryManagementProperties for the reasoning behind each number.
+#
+# No caching sits in front of any of this yet, deliberately - measuring real usage comes before adding one.
+repository:
+  search:
+    # Neither configured provider offers a server-side search on these listings, so a search term is
+    # applied over pages this application fetches. These two numbers bound that scan: 5 pages of 100 means
+    # a search looks at up to 500 items in up to 5 provider calls. A result set the scan did not finish is
+    # reported with no totalElements, which is how a client knows it may be incomplete.
+    max-pages: ${REPOSITORY_SEARCH_MAX_PAGES:5}
+    page-size: ${REPOSITORY_SEARCH_PAGE_SIZE:100}
+  diff:
+    # Bounds the parsed structure, not the download - scm.http.max-response-bytes already caps that. The
+    # parsed form is several times the size of the text it came from and is what gets serialised to a
+    # client, so it needs its own ceiling. Exceeding either marks the response truncated rather than
+    # silently serving a partial diff.
+    max-lines: ${REPOSITORY_DIFF_MAX_LINES:20000}
+    max-files: ${REPOSITORY_DIFF_MAX_FILES:300}
 # Cloudinary
 #
 # The API secret had a committed default and must be treated as compromised and rotated. Blank defaults
@@ -174,7 +196,7 @@ config:
 # SpringDoc
 springdoc:
   paths-to-match: /api/**
-  packages-to-scan: com.kksg.applicationServices.identity.controller, com.kksg.applicationServices.controllers, com.kksg.applicationServices.scm.provider.controller, com.kksg.applicationServices.scm.connection.controller, com.kksg.applicationServices.scm.webhook.controller
+  packages-to-scan: com.kksg.applicationServices.identity.controller, com.kksg.applicationServices.controllers, com.kksg.applicationServices.scm.provider.controller, com.kksg.applicationServices.scm.connection.controller, com.kksg.applicationServices.scm.webhook.controller, com.kksg.applicationServices.repository.controller
 
 # Logging
 logging:
@@ -184,3 +206,7 @@ logging:
     # SCM integration logs one structured line per provider call (method, URI, status,
     # duration) at INFO. Credentials, request headers and bodies are never logged.
     com.kksg.applicationServices.scm: INFO
+    # Repository Management logs the application-facing half of each provider call - user, connection,
+    # provider, operation, resource addressed, duration, outcome - at INFO. Request parameters are logged
+    # through an allow-list (owner, repo, pullRequestNumber), never wholesale.
+    com.kksg.applicationServices.repository: INFO

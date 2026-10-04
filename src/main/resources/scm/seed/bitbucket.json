@@ -117,13 +117,20 @@
           "name": "name",
           "fullName": "full_name",
           "owner": "workspace.slug",
+          "ownerExternalId": "workspace.uuid",
+          "ownerAvatarUrl": "workspace.links.avatar.href",
           "isPrivate": "is_private",
           "defaultBranch": "mainbranch.name",
           "description": "description",
           "cloneUrl": "links.clone[0].href",
-          "webUrl": "links.html.href"
+          "webUrl": "links.html.href",
+          "updatedAt": "updated_on"
         },
-        "transforms": { "externalId": "TO_STRING", "isPrivate": "TO_BOOLEAN" }
+        "transforms": {
+          "externalId": "TO_STRING",
+          "ownerExternalId": "TO_STRING",
+          "isPrivate": "TO_BOOLEAN"
+        }
       }
     },
 
@@ -139,13 +146,20 @@
           "name": "name",
           "fullName": "full_name",
           "owner": "workspace.slug",
+          "ownerExternalId": "workspace.uuid",
+          "ownerAvatarUrl": "workspace.links.avatar.href",
           "isPrivate": "is_private",
           "defaultBranch": "mainbranch.name",
           "description": "description",
           "cloneUrl": "links.clone[0].href",
-          "webUrl": "links.html.href"
+          "webUrl": "links.html.href",
+          "updatedAt": "updated_on"
         },
-        "transforms": { "externalId": "TO_STRING", "isPrivate": "TO_BOOLEAN" }
+        "transforms": {
+          "externalId": "TO_STRING",
+          "ownerExternalId": "TO_STRING",
+          "isPrivate": "TO_BOOLEAN"
+        }
       }
     },
 
@@ -159,8 +173,18 @@
         "queryParams": {
           "page": "{{page}}",
           "pagelen": "{{pageSize}}",
-          "state": "{{state}}"
-        }
+          "state": "{{state}}",
+          "sort": "-updated_on"
+        },
+        "parameterValueMappings": {
+          "state": {
+            "OPEN": "OPEN",
+            "CLOSED": "DECLINED|SUPERSEDED",
+            "MERGED": "MERGED",
+            "ALL": "OPEN|MERGED|DECLINED|SUPERSEDED"
+          }
+        },
+        "multiValueQueryParams": ["state"]
       },
       "responseMapping": {
         "type": "LIST",

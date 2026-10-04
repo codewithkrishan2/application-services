@@ -11,8 +11,10 @@ import com.kksg.applicationServices.scm.connection.repository.ScmConnectionRepos
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -103,6 +105,49 @@ public class ScmConnectionService {
         log.info("SCM_DISCONNECTED: userId={}, connectionId={}, providerCode={}",
                 user.getId(), connectionId,
                 connection.getProvider() != null ? connection.getProvider().getProviderCode() : null);
+    }
+
+    /**
+     * Asserts a connection may be used for provider API calls.
+     *
+     * <p>Separate from {@link #requireOwned} because ownership and usability answer different
+     * questions and have different correct responses: another user's id must look absent (404), while
+     * the caller's own disconnected connection is a state conflict (409) they can resolve by
+     * reconnecting. Collapsing the two would either leak the existence of other users' connections or
+     * tell a user their own connection does not exist.
+     *
+     * <p>{@code EXPIRED} is deliberately allowed through: the token service may still be able to
+     * refresh it, and failing here would break connections that are in fact usable.
+     *
+     * @throws ScmException {@link ScmErrorCode#SCM_CONNECTION_NOT_ACTIVE}
+     */
+    public void requireUsable(ScmConnection connection) {
+        if (!connection.isUsable()) {
+            log.warn("SCM_CONNECTION_NOT_ACTIVE: connectionId={}, status={}",
+                    connection.getId(), connection.getConnectionStatus());
+            throw new ScmException(ScmErrorCode.SCM_CONNECTION_NOT_ACTIVE,
+                    "connectionId=%d status=%s".formatted(connection.getId(), connection.getConnectionStatus()));
+        }
+    }
+
+    /**
+     * Records a successful provider call against a connection.
+     *
+     * <p>Best-effort by design and swallows its own failures: this is operational metadata, and a
+     * write error here must not turn a successful read into a failed request. {@code REQUIRES_NEW} so
+     * it commits independently of any surrounding transaction, which matters because the caller is an
+     * outward-facing read that is deliberately not transactional.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markUsed(Integer connectionId) {
+        if (connectionId == null) {
+            return;
+        }
+        try {
+            connectionRepository.touchLastUsedAt(connectionId, Instant.now());
+        } catch (RuntimeException ex) {
+            log.warn("SCM_CONNECTION_TOUCH_FAILED: connectionId={}, reason={}", connectionId, ex.getMessage());
+        }
     }
 
     /**

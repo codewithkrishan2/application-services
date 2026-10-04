@@ -41,6 +41,20 @@ import java.util.Map;
  * @param paginated         whether paging parameters and next-page detection apply.
  * @param requiredParameters parameters that must be present, checked before any network call so a
  *                          caller mistake surfaces as a 400 rather than a provider error.
+ * @param parameterValueMappings translation from a <b>normalized</b> parameter value to the value this
+ *                          provider expects, keyed by parameter name then by normalized value -
+ *                          {@code {"state": {"OPEN": "open", "ALL": "all"}}}. The request-side
+ *                          counterpart of {@code response_mapping.valueMappings}, and the reason a
+ *                          caller can filter pull requests by the canonical {@code OPEN} without
+ *                          knowing that one provider spells it {@code open} and another {@code OPEN}.
+ *                          Matched case-insensitively. A value with no entry is passed through
+ *                          unchanged, so a provider needing no translation declares nothing.
+ * @param multiValueQueryParams query parameters whose resolved value may expand into <b>repeated</b>
+ *                          entries, split on {@value #MULTI_VALUE_DELIMITER}. Needed because some
+ *                          providers express "any state" as {@code ?state=A&state=B&state=C} rather
+ *                          than a single {@code all} token. Opt-in per parameter rather than applied
+ *                          everywhere, so a search term that happens to contain the delimiter is never
+ *                          silently torn into pieces.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record RequestConfiguration(
@@ -49,10 +63,20 @@ public record RequestConfiguration(
         Map<String, String> pathParams,
         Object bodyTemplate,
         Boolean paginated,
-        List<String> requiredParameters) {
+        List<String> requiredParameters,
+        Map<String, Map<String, String>> parameterValueMappings,
+        List<String> multiValueQueryParams) {
+
+    /**
+     * Separator for {@link #multiValueQueryParams}.
+     *
+     * <p>A vertical bar because it cannot occur in any provider's state, role or sort enumeration, so
+     * splitting on it cannot corrupt a legitimate single value.
+     */
+    public static final String MULTI_VALUE_DELIMITER = "|";
 
     private static final RequestConfiguration EMPTY =
-            new RequestConfiguration(null, null, null, null, null, null);
+            new RequestConfiguration(null, null, null, null, null, null, null, null);
 
     public static RequestConfiguration empty() {
         return EMPTY;
@@ -72,6 +96,14 @@ public record RequestConfiguration(
 
     public List<String> requiredParametersOrEmpty() {
         return requiredParameters != null ? requiredParameters : List.of();
+    }
+
+    public Map<String, Map<String, String>> parameterValueMappingsOrEmpty() {
+        return parameterValueMappings != null ? parameterValueMappings : Map.of();
+    }
+
+    public List<String> multiValueQueryParamsOrEmpty() {
+        return multiValueQueryParams != null ? multiValueQueryParams : List.of();
     }
 
     public boolean isPaginated() {

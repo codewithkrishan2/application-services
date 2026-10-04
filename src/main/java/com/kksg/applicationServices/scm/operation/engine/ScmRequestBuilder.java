@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * Turns a normalized operation request plus provider configuration into a concrete
@@ -31,6 +32,7 @@ import java.util.Optional;
  * <p>The pipeline, in order:
  * <ol>
  *   <li>validate required parameters - fail before any network call;</li>
+ *   <li>translate normalized parameter values into provider values via {@code parameterValueMappings};</li>
  *   <li>apply paging defaults and clamp page size to the provider ceiling;</li>
  *   <li>resolve {@code pathParams} aliases and merge them into the effective parameters;</li>
  *   <li>resolve the endpoint template, URL-encoding substituted values;</li>
@@ -38,6 +40,10 @@ import java.util.Optional;
  *   <li>layer headers: provider defaults, then operation headers, then authentication;</li>
  *   <li>shape the body from {@code bodyTemplate}, if any.</li>
  * </ol>
+ *
+ * <p>Value translation happens before anything reads the parameters, so a normalized {@code state=OPEN}
+ * is already the provider's own spelling by the time it reaches a query parameter, a path segment or a
+ * body template - there is no second place that needs to know about the mapping.
  */
 @Component
 public class ScmRequestBuilder {
@@ -66,6 +72,7 @@ public class ScmRequestBuilder {
         }
 
         validateRequiredParameters(requestConfiguration, parameters, operationLabel);
+        applyParameterValueMappings(requestConfiguration, parameters, operationLabel);
         applyPagingDefaults(requestConfiguration, configuration, parameters);
         applyPathAliases(requestConfiguration, parameters, operationLabel);
 
@@ -96,6 +103,58 @@ public class ScmRequestBuilder {
             throw new ScmException(ScmErrorCode.SCM_OPERATION_PARAMETER_MISSING,
                     "%s requires parameter(s) %s".formatted(operationLabel, missing));
         }
+    }
+
+    /**
+     * Rewrites normalized parameter values into the vocabulary this provider's API uses.
+     *
+     * <p>The mirror image of {@code response_mapping.valueMappings}, which translates provider values
+     * into normalized ones on the way back. Without this, a caller filtering pull requests would have
+     * to know that one provider wants {@code state=open} and another {@code state=OPEN} - the exact
+     * provider branch the module exists to remove.
+     *
+     * <p>A value with no mapping entry passes through untouched, so a provider that already speaks the
+     * normalized vocabulary declares nothing. A parameter mapped to the empty string is <b>removed</b>
+     * rather than sent empty: that is how a provider declares "this filter does not apply to me", and
+     * an empty query value would otherwise be rejected or silently reinterpreted by the provider.
+     */
+    private void applyParameterValueMappings(RequestConfiguration requestConfiguration,
+                                             Map<String, Object> parameters,
+                                             String operationLabel) {
+        Map<String, Map<String, String>> mappings = requestConfiguration.parameterValueMappingsOrEmpty();
+        if (mappings.isEmpty()) {
+            return;
+        }
+        mappings.forEach((parameterName, valueMapping) -> {
+            Object supplied = parameters.get(parameterName);
+            if (supplied == null || valueMapping == null || valueMapping.isEmpty()) {
+                return;
+            }
+            String mapped = lookupIgnoringCase(valueMapping, String.valueOf(supplied));
+            if (mapped == null) {
+                return;
+            }
+            if (mapped.isBlank()) {
+                parameters.remove(parameterName);
+                log.debug("SCM_PARAMETER_DROPPED_BY_MAPPING: operationCode={}, parameter={}",
+                        operationLabel, parameterName);
+            } else {
+                parameters.put(parameterName, mapped);
+            }
+        });
+    }
+
+    private String lookupIgnoringCase(Map<String, String> mapping, String value) {
+        String direct = mapping.get(value);
+        if (direct != null) {
+            return direct;
+        }
+        for (Map.Entry<String, String> entry : mapping.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(value)) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     /**
@@ -160,15 +219,57 @@ public class ScmRequestBuilder {
         String normalizedBase = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         String normalizedPath = resolvedPath.startsWith("/") ? resolvedPath : "/" + resolvedPath;
 
+        List<String> multiValue = requestConfiguration.multiValueQueryParamsOrEmpty();
+
         UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(normalizedBase + normalizedPath);
         requestConfiguration.queryParamsOrEmpty().forEach((name, template) -> {
             Optional<String> value = PlaceholderResolver.resolveOptional(template, parameters);
             // An unresolved placeholder means "caller did not supply this"; omitting the parameter is
             // the correct behaviour and is what makes optional paging work without extra flags.
             value.filter(resolved -> !resolved.isBlank())
-                    .ifPresent(resolved -> builder.queryParam(name, resolved));
+                    .ifPresent(resolved -> appendQueryParam(builder, name, resolved, multiValue));
         });
-        return builder.encode(StandardCharsets.UTF_8).build().toUriString();
+
+        // build(true) - "the components are already encoded" - rather than encode().build().
+        //
+        // The path reached here already percent-encoded, segment by segment, from encodeForPath. Asking
+        // the builder to encode the assembled URI would therefore escape those escapes: a value
+        // containing a slash arrived as %2F and would leave as %252F, and the provider would be asked
+        // for a repository whose name literally contains "%2F". The security property held either way -
+        // a value still cannot introduce a path segment - but the request was wrong.
+        //
+        // Query values are consequently encoded explicitly below, with the same component rules
+        // encode() would have applied to them, so the query string is unchanged by this.
+        return builder.build(true).toUriString();
+    }
+
+    /**
+     * Appends one query parameter, encoded, expanding it into repeated entries when the operation
+     * declares it multi-valued.
+     *
+     * <p>Only declared parameters are split, and splitting happens <b>before</b> encoding so that a
+     * delimiter inside an ordinary value - which encodes to {@code %7C} - cannot be mistaken for a
+     * separator afterwards. Applying the rule to every parameter would mean a repository search term
+     * containing a vertical bar silently became several unrelated filters.
+     */
+    private void appendQueryParam(UriComponentsBuilder builder,
+                                  String name,
+                                  String resolved,
+                                  List<String> multiValueQueryParams) {
+        if (!multiValueQueryParams.contains(name)) {
+            builder.queryParam(name, encodeQueryValue(resolved));
+            return;
+        }
+        for (String part : resolved.split(Pattern.quote(RequestConfiguration.MULTI_VALUE_DELIMITER))) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                builder.queryParam(name, encodeQueryValue(trimmed));
+            }
+        }
+    }
+
+    private String encodeQueryValue(String value) {
+        return UriUtils.encodeQueryParam(value, StandardCharsets.UTF_8);
     }
 
     /**

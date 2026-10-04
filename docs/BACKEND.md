@@ -2,15 +2,18 @@
 
 Spring Boot 3.3.2 / Java 21 / PostgreSQL. Packaged as a WAR (`ServletInitializer` is present), run in development with `./mvnw spring-boot:run -Dspring-boot.run.profiles=local`.
 
-Two feature modules are built: **Identity** (OAuth sign-in and sessions) and **SCM** (source-control provider integration). Everything else — repository indexing, pull-request review, AI analysis, billing — does not exist yet.
+Three feature modules are built: **Identity** (OAuth sign-in and sessions), **SCM** (source-control provider integration) and **Repository management** (repositories, pull requests, files and diffs over the SCM engine). Everything else — review orchestration, AI analysis, repository indexing, billing — does not exist yet.
 
 ```
 com.kksg.applicationServices
 ├── identity/     37 files — sign-in, JWT sessions, user profile
-├── scm/          92 files — providers, connections, webhooks, outbound operation engine
-├── common/        6 files — ApiResponse envelope, exceptions, GlobalExceptionHandler
+├── scm/          93 files — providers, connections, webhooks, outbound operation engine
+├── repository/   28 files — repository and pull-request REST layer, diff parsing
+├── common/        7 files — ApiResponse and PageResponse envelopes, exceptions, GlobalExceptionHandler
 └── config/                 OpenAPI, ModelMapper, Cloudinary (last two unused)
 ```
+
+Repository management has its own document — [`features/repository-management.md`](features/repository-management.md) — because it was written after this one and because new features get their own file. See [`README.md`](README.md) for how these documents are organised.
 
 ---
 
@@ -20,6 +23,7 @@ com.kksg.applicationServices
 - [Feature status](#feature-status)
 - [Identity module](#identity-module)
 - [SCM module](#scm-module)
+- [Repository management module](#repository-management-module)
 - [Data model](#data-model)
 - [Security](#security)
 - [Configuration](#configuration)
@@ -77,7 +81,11 @@ Clients should branch on the HTTP status and, for SCM calls, on `errors.code` �
 | SCM disconnect | Built | Idempotent, destroys credentials |
 | Encrypted credential storage | Built | AES/GCM, key-versioned |
 | Webhook ingestion with HMAC verification | Built | Stores deliveries; no consumer yet |
-| Repository / pull-request REST endpoints | Not built | Operations are reachable only internally |
+| Repository listing, search and detail | Built | Paged; nested under a connection |
+| Pull-request listing, detail, files and diff | Built | State filtered at the provider; diff parsed server-side |
+| Repository / pull-request persistence | Not built | **Deliberate** — they are provider resources, not records |
+| Caching of repository or PR data | Not built | **Deliberate** — measure before adding |
+| SCM write operations (comment, review, webhook create) | Not built | Operations are configured but reachable only internally |
 | Token refresh for SCM connections | Not built | Declared per provider, no scheduler calls it |
 
 ---
@@ -203,7 +211,7 @@ A second path exists — `POST /api/v1/scm/connections` with a client-captured `
 | GET | `/api/v1/scm/connections/callback/{providerCode}` | public | 302 |
 | POST | `/api/v1/scm/webhooks/{providerCode}` | HMAC | 200 |
 
-**Nothing here paginates.** Both collection endpoints return a bare array in `data`, ordered server-side. (`ScmPagination` exists, but it drives *outbound* paging against provider APIs and is not exposed.)
+**None of _these_ endpoints paginate.** Both collection endpoints return a bare array in `data`, ordered server-side. (`ScmPagination` drives *outbound* paging against provider APIs and is not exposed directly.) The repository-management endpoints nested beneath `/scm/connections/{connectionId}` do paginate, with a `PageResponse` envelope — see [that module](features/repository-management.md#pagination).
 
 `providerId` and `connectionId` are `Integer` — a non-numeric segment is a 400, not a 404.
 
@@ -251,7 +259,7 @@ Deliveries are recorded in `scm_webhook_deliveries`. Normalised event types are 
 
 `ScmCapabilityCode` — `LIST_REPOSITORIES`, `GET_REPOSITORY`, `LIST_PULL_REQUESTS`, `GET_PULL_REQUEST`, `GET_PULL_REQUEST_FILES`, `GET_PULL_REQUEST_DIFF`, `CREATE_WEBHOOK`, `DELETE_WEBHOOK`, `CREATE_PR_COMMENT`, `CREATE_PR_REVIEW`, `OAUTH_TOKEN_REFRESH`, `WEBHOOK_SIGNATURE_VERIFICATION`.
 
-`ScmOperationCode` — the same list minus the last two, plus `GET_CURRENT_ACCOUNT`. A capability can be declared supported while its operation row is absent, which is why the two are reported separately.
+`ScmOperationCode` — the same list minus the last two, plus `GET_CURRENT_ACCOUNT`. A capability can be declared supported while its operation row is absent, which is why the two are reported separately. The six read operations are invoked by the [repository-management module](features/repository-management.md); the write operations are configured but not yet reachable from any route.
 
 `ScmErrorCode` and its owned HTTP status — this is the stable `errors.code` vocabulary:
 
@@ -263,14 +271,38 @@ Deliveries are recorded in `scm_webhook_deliveries`. Normalised event types are 
 | `SCM_CONNECTION_NOT_FOUND` | 404 |
 | `SCM_CONNECTION_ALREADY_EXISTS` | 409 |
 | `SCM_CONNECTION_EXPIRED` / `SCM_CONNECTION_REVOKED` | 401 |
+| `SCM_CONNECTION_NOT_ACTIVE` | 409 |
+| `SCM_REQUEST_INVALID` | 400 |
 | `SCM_OPERATION_NOT_SUPPORTED` / `SCM_OPERATION_PARAMETER_MISSING` | 400 |
 | `SCM_OPERATION_NOT_CONFIGURED` / `SCM_RESPONSE_MAPPING_INVALID` | 500 |
 | `SCM_OAUTH_STATE_INVALID` | 400 |
 | `SCM_OAUTH_EXCHANGE_FAILED` / `SCM_PROVIDER_API_ERROR` | 502 |
 | `SCM_PROVIDER_RATE_LIMITED` | 429 |
+| `SCM_PROVIDER_RESOURCE_NOT_FOUND` | 404 |
+| `SCM_REPOSITORY_NOT_FOUND` / `SCM_PULL_REQUEST_NOT_FOUND` | 404 |
 | `SCM_WEBHOOK_SIGNATURE_INVALID` | 401 |
 | `SCM_WEBHOOK_ALREADY_PROCESSED` / `SCM_WEBHOOK_EVENT_NOT_MAPPED` | 200 |
 | `SCM_SECRET_NOT_FOUND` / `SCM_SECRET_STORAGE_FAILED` | 500 |
+
+The last six were added by the repository-management module. They live here rather than in a second vocabulary because one enum that owns both the code and the HTTP status is what lets `GlobalExceptionHandler` need exactly one handler for all of it — adding a failure mode never requires touching that class.
+
+---
+
+## Repository management module
+
+Documented separately: [`features/repository-management.md`](features/repository-management.md).
+
+In brief — six paged read endpoints nested under `/api/v1/scm/connections/{connectionId}/repositories`, built entirely on `ScmClient` with no provider name anywhere in the module. A repository is addressed as `{owner}/{repo}` because that is what provider APIs accept; a pull request by its user-visible `number`, not its id.
+
+Three things about it are worth knowing even if you read nothing else:
+
+**One authorization gate.** `ScmResourceAccessService` is the only way to obtain a `ScmResourceContext`, and every service below it takes that context as a parameter — so an unauthorized call cannot be written. Another user's connection id answers **404, not 403**, so the endpoint cannot be used to enumerate connections. Repository and pull-request access are enforced by the provider refusing the credential, not by a local permissions mirror.
+
+**Nothing is persisted.** No `repositories` or `pull_requests` tables, no new columns. They are provider resources; a mirror would be stale when written. The one write is `lastUsedAt` on a connection after a successful call.
+
+**`PageResponse.totalElements` is usually absent**, because providers do not publish totals. Clients must drive paging from `hasNext`. An invented total would be worse than none, because a client cannot tell it is wrong.
+
+It also made three small additive changes inside the SCM module, all of which stayed in the declarative vocabulary rather than becoming Java branches: `parameterValueMappings` and `multiValueQueryParams` on `request_configuration` (canonical → provider request values), a `mergedAt` field on `NormalizedPullRequest`, and 404 classification in `ConfigDrivenScmClient`. Two pre-existing test failures in the engine were also fixed — a pagination heuristic that overrode a declared `nextPath`, and double-encoded path values. Both are described in the feature document.
 
 ---
 
@@ -349,7 +381,7 @@ One trap, and the reason `spring.devtools.restart.additional-paths: config` is s
 
 ### Swagger
 
-`http://localhost:8080/coderev/swagger-ui.html`, OpenAPI JSON at `/coderev/v3/api-docs` — **only** when `EXPOSE_API_DOCS=true`. Security scheme `bearerAuth` is registered globally. Note `springdoc.packages-to-scan` lists `com.kksg.applicationServices.controllers`, which does not exist.
+`http://localhost:8080/coderev/swagger-ui.html`, OpenAPI JSON at `/coderev/v3/api-docs` — **only** when `EXPOSE_API_DOCS=true`. Security scheme `bearerAuth` is registered globally. A controller package absent from `springdoc.packages-to-scan` is silently undocumented, so adding a controller means adding its package there; note the list still includes `com.kksg.applicationServices.controllers`, which does not exist.
 
 ---
 
@@ -371,13 +403,22 @@ Beyond the "Not built" rows above, these are behaviours worth knowing before rel
 **SCM**
 
 - Webhook deliveries are stored but never consumed.
-- No REST surface for repositories or pull requests; the operation engine is internal-only.
+- The write operations — `CREATE_PR_COMMENT`, `CREATE_PR_REVIEW`, `CREATE_WEBHOOK`, `DELETE_WEBHOOK` — are configured but reachable only internally. The six read operations are exposed by the repository-management module.
 - `OAUTH_TOKEN_REFRESH` is declared per provider but nothing schedules a refresh, so `EXPIRED` connections require manual reconnect.
 - The provider list exposes no signal for whether credentials are configured, so a client cannot disable a Connect action ahead of time — a misconfigured provider fails on click with `SCM_PROVIDER_CONFIGURATION_INVALID`.
 - Bitbucket declares `CREATE_PR_REVIEW` unsupported.
 
+**Repository management**
+
+Full list in [the feature document](features/repository-management.md#known-gaps). The ones with the widest reach:
+
+- **No caching.** Every request calls the provider, so a provider rate limit is the practical ceiling on throughput.
+- **Search reach is bounded** at 500 items by default, because neither provider offers a server-side search on these listings. An absent `totalElements` is the signal that a result set may be incomplete.
+- **`MERGED` is approximate as a filter on GitHub**, where it maps to `closed` at the provider. Individual states are still correct, being resolved from `mergedAt`.
+- No integration test against a live provider; the module's own tests mock the engine.
+
 **Cross-cutting**
 
 - No schema migrations; `ddl-auto: update` only.
-- No tests for the identity module. `src/test` holds the context-load test plus SCM unit tests.
+- No tests for the identity module. `src/test` holds the context-load test, SCM unit tests, and the repository-management suite — 245 tests in total.
 - `ModelMapperConfig` and `CloudnaryConfig` define unused beans; `spring.mail.*` is configured with no mail code.

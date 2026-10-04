@@ -1,5 +1,6 @@
 package com.kksg.applicationServices.scm.connection.repository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -8,6 +9,7 @@ import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -56,6 +58,17 @@ public interface ScmConnectionRepository extends JpaRepository<ScmConnection, In
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT c FROM ScmConnection c WHERE c.id = :id")
     Optional<ScmConnection> findByIdForUpdate(@Param("id") Integer id);
+
+    /**
+     * Records that a connection was just used successfully, without loading the entity.
+     *
+     * <p>A bulk update rather than a read-modify-save because this runs after every provider call and
+     * must not contend with anything: it touches one column, takes no row lock beyond the statement,
+     * and cannot overwrite a concurrent status change made by the token refresher or by a disconnect.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE ScmConnection c SET c.lastUsedAt = :usedAt WHERE c.id = :id")
+    int touchLastUsedAt(@Param("id") Integer id, @Param("usedAt") Instant usedAt);
 
     /**
      * Attributes an inbound webhook to a connection.

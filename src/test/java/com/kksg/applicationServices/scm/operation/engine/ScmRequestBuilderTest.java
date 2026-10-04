@@ -374,3 +374,147 @@ class ScmRequestBuilderTest {
         assertThat(built.request().getUri()).isEqualTo("https://api.github.com/user");
     }
 }
+
+/**
+ * Request-side value translation, added for Module 3's pull-request state filter.
+ *
+ * <p>Separated into its own class because it is the mirror image of {@code response_mapping}'s
+ * {@code valueMappings} rather than another aspect of request assembly: these two features exist so a
+ * caller can filter by the canonical {@code OPEN} without knowing that one provider spells it
+ * {@code open}, another {@code OPEN}, and a third needs three repeated parameters to mean "any". That
+ * is the provider branch the module exists to remove, and it stays in configuration.
+ */
+class ScmRequestBuilderValueMappingTest {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ScmRequestBuilder builder = new ScmRequestBuilder();
+
+    private ProviderConfiguration configuration() throws Exception {
+        return objectMapper.readValue("""
+                {
+                  "api": {
+                    "baseUrl": "https://api.example.com",
+                    "authentication": { "scheme": "BEARER", "header": "Authorization", "valuePrefix": "Bearer " }
+                  },
+                  "pagination": {
+                    "type": "PAGE", "pageParameter": "page", "sizeParameter": "per_page",
+                    "defaultPageSize": 50, "maxPageSize": 100
+                  }
+                }
+                """, ProviderConfiguration.class);
+    }
+
+    private ResolvedOperation listPullRequests(String requestConfigurationJson) throws Exception {
+        ScmProviderOperation entity = new ScmProviderOperation();
+        entity.setOperationCode(ScmOperationCode.LIST_PULL_REQUESTS);
+        entity.setHttpMethod("GET");
+        entity.setEndpointTemplate("/repos/{{owner}}/{{repo}}/pulls");
+
+        return new ResolvedOperation(entity,
+                objectMapper.readValue(requestConfigurationJson, RequestConfiguration.class),
+                ResponseMapping.raw());
+    }
+
+    private String uriFor(String requestConfigurationJson, String state) throws Exception {
+        ScmOperationRequest request = ScmOperationRequest.of(ScmOperationCode.LIST_PULL_REQUESTS)
+                .parameter("owner", "acme")
+                .parameter("repo", "api")
+                .parameter("state", state)
+                .page(1, 20);
+
+        return builder.build(request, configuration(), listPullRequests(requestConfigurationJson),
+                "https://api.example.com", "token").request().getUri();
+    }
+
+    @Test
+    @DisplayName("translates a normalized parameter value into the provider's spelling")
+    void translatesParameterValue() throws Exception {
+        String config = """
+                {
+                  "queryParams": { "state": "{{state}}" },
+                  "parameterValueMappings": {
+                    "state": { "OPEN": "open", "CLOSED": "closed", "ALL": "all" }
+                  }
+                }
+                """;
+
+        assertThat(uriFor(config, "OPEN")).contains("state=open");
+        assertThat(uriFor(config, "ALL")).contains("state=all");
+    }
+
+    @Test
+    @DisplayName("matches the normalized value case-insensitively")
+    void matchesCaseInsensitively() throws Exception {
+        String config = """
+                { "queryParams": { "state": "{{state}}" },
+                  "parameterValueMappings": { "state": { "OPEN": "open" } } }
+                """;
+
+        assertThat(uriFor(config, "open")).contains("state=open");
+    }
+
+    @Test
+    @DisplayName("passes an unmapped value through unchanged")
+    void passesUnmappedValueThrough() throws Exception {
+        // A provider that already speaks the normalized vocabulary declares nothing, so absence of an
+        // entry must not mean "drop it".
+        String config = """
+                { "queryParams": { "state": "{{state}}" },
+                  "parameterValueMappings": { "state": { "CLOSED": "DECLINED" } } }
+                """;
+
+        assertThat(uriFor(config, "MERGED")).contains("state=MERGED");
+    }
+
+    @Test
+    @DisplayName("a value mapped to the empty string removes the parameter")
+    void emptyMappingDropsParameter() throws Exception {
+        // How a provider declares "this filter does not apply to me". Sending an empty value instead
+        // would be rejected or silently reinterpreted by the provider.
+        String config = """
+                { "queryParams": { "state": "{{state}}" },
+                  "parameterValueMappings": { "state": { "ALL": "" } } }
+                """;
+
+        assertThat(uriFor(config, "ALL")).doesNotContain("state");
+    }
+
+    @Test
+    @DisplayName("expands a declared multi-value parameter into repeated query entries")
+    void expandsMultiValueParameter() throws Exception {
+        // Some providers express "any state" as repeated parameters rather than a single `all` token.
+        String config = """
+                {
+                  "queryParams": { "state": "{{state}}" },
+                  "parameterValueMappings": {
+                    "state": { "ALL": "OPEN|MERGED|DECLINED" }
+                  },
+                  "multiValueQueryParams": ["state"]
+                }
+                """;
+
+        String uri = uriFor(config, "ALL");
+
+        assertThat(uri).contains("state=OPEN").contains("state=MERGED").contains("state=DECLINED");
+        assertThat(uri.split("state=", -1)).hasSize(4);
+    }
+
+    @Test
+    @DisplayName("does not split a parameter that was not declared multi-valued")
+    void doesNotSplitUndeclaredParameter() throws Exception {
+        // Splitting every value would mean a search term containing a vertical bar silently became
+        // several unrelated filters. The rule is opt-in for exactly that reason.
+        String config = """
+                { "queryParams": { "state": "{{state}}" } }
+                """;
+
+        assertThat(uriFor(config, "A|B")).contains("state=A%7CB");
+    }
+
+    @Test
+    @DisplayName("no mappings declared leaves the request untouched")
+    void noMappingsIsANoOp() throws Exception {
+        assertThat(uriFor("{ \"queryParams\": { \"state\": \"{{state}}\" } }", "OPEN"))
+                .contains("state=OPEN");
+    }
+}

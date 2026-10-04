@@ -231,8 +231,15 @@ public class ConfigDrivenScmClient implements ScmClient {
      *
      * <p>The status determines the caller's correct response, so the distinctions are preserved rather
      * than collapsed into one generic failure: 401 means the credential must be renewed or the user
-     * must reauthorize; 403/429 with rate-limit signals means back off and retry later; anything else
-     * is a provider or configuration fault.
+     * must reauthorize; 403/429 with rate-limit signals means back off and retry later; 404/410 means
+     * the addressed resource is absent or invisible to this credential; anything else is a provider or
+     * configuration fault.
+     *
+     * <p>The 404 case is reported as its own code rather than as a generic provider failure because the
+     * two deserve opposite treatment - one is a 404 the user caused by asking for a repository they
+     * cannot see, the other is a 502 worth paging someone about. The engine stops at "the provider says
+     * it is not there"; naming <i>which</i> resource is missing is the caller's job, since only the
+     * caller knows whether the request addressed a repository or a pull request.
      *
      * <p>The response body is logged but never placed in the exception message: provider error bodies
      * echo request content, and a webhook-creation call carries a webhook secret in its request body.
@@ -252,6 +259,11 @@ public class ConfigDrivenScmClient implements ScmClient {
         if (status == 429 || (status == 403 && isRateLimited(response))) {
             return new ScmException(ScmErrorCode.SCM_PROVIDER_RATE_LIMITED,
                     "providerCode=%s".formatted(provider.getProviderCode()));
+        }
+        if (status == 404 || status == 410) {
+            return new ScmException(ScmErrorCode.SCM_PROVIDER_RESOURCE_NOT_FOUND,
+                    "providerCode=%s operationCode=%s"
+                            .formatted(provider.getProviderCode(), request.getOperation()));
         }
         return new ScmException(ScmErrorCode.SCM_PROVIDER_API_ERROR,
                 "providerCode=%s operationCode=%s status=%d"

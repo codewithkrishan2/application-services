@@ -28,7 +28,7 @@ class ScmPaginationResolverTest {
     }
 
     private RequestConfiguration paginated() {
-        return new RequestConfiguration(null, null, null, null, true, null);
+        return new RequestConfiguration(null, null, null, null, true, null, null, null);
     }
 
     private JsonNode arrayOfSize(int size) {

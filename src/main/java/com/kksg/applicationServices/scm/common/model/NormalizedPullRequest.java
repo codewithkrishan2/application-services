@@ -54,4 +54,16 @@ public class NormalizedPullRequest {
     private String createdAt;
 
     private String updatedAt;
+
+    /**
+     * When the pull request was merged, ISO-8601, or {@code null} if it was not.
+     *
+     * <p>Present because providers disagree on whether "merged" is a <i>state</i> or an <i>event</i>.
+     * Some report {@code state=MERGED} directly; others report {@code state=closed} and record the
+     * merge separately, so without this field a merged pull request is indistinguishable from an
+     * abandoned one. The declarative mapping cannot express "closed plus a merge timestamp means
+     * merged" - it has no conditionals - so the fact is normalized here and the single derivation rule
+     * lives in one place in the consuming module, which keeps it provider-agnostic.
+     */
+    private String mergedAt;
 }

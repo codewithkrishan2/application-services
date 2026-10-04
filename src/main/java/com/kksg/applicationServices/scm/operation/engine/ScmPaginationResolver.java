@@ -57,7 +57,18 @@ public class ScmPaginationResolver {
         String nextIndicator = readNextIndicator(response, pagination);
         boolean hasNext = nextIndicator != null;
 
-        if (!hasNext && pagination.typeOrDefault() == ProviderConfiguration.PaginationType.PAGE) {
+        // The heuristic is a last resort, and it must stay one. When a provider's configuration declares
+        // a nextPath, that field is authoritative in both directions: present means more, and *absent*
+        // means this is the last page. Falling back to "a full page probably has more" there would
+        // contradict an explicit signal and advertise a page that does not exist - which a client then
+        // offers as a Next button leading to an empty list. A provider using Link headers gets no such
+        // declaration, so for those the absence of a header is genuinely ambiguous and the heuristic
+        // still applies.
+        boolean providerDeclaresNextPath =
+                pagination.nextPath() != null && !pagination.nextPath().isBlank();
+
+        if (!hasNext && !providerDeclaresNextPath
+                && pagination.typeOrDefault() == ProviderConfiguration.PaginationType.PAGE) {
             hasNext = pageSize != null && itemCount >= pageSize;
         }
 

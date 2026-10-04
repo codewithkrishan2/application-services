@@ -113,13 +113,20 @@
           "name": "name",
           "fullName": "full_name",
           "owner": "owner.login",
+          "ownerExternalId": "owner.id",
+          "ownerAvatarUrl": "owner.avatar_url",
           "isPrivate": "private",
           "defaultBranch": "default_branch",
           "description": "description",
           "cloneUrl": "clone_url",
-          "webUrl": "html_url"
+          "webUrl": "html_url",
+          "updatedAt": ["pushed_at", "updated_at"]
         },
-        "transforms": { "externalId": "TO_STRING", "isPrivate": "TO_BOOLEAN" }
+        "transforms": {
+          "externalId": "TO_STRING",
+          "ownerExternalId": "TO_STRING",
+          "isPrivate": "TO_BOOLEAN"
+        }
       }
     },
 
@@ -135,13 +142,20 @@
           "name": "name",
           "fullName": "full_name",
           "owner": "owner.login",
+          "ownerExternalId": "owner.id",
+          "ownerAvatarUrl": "owner.avatar_url",
           "isPrivate": "private",
           "defaultBranch": "default_branch",
           "description": "description",
           "cloneUrl": "clone_url",
-          "webUrl": "html_url"
+          "webUrl": "html_url",
+          "updatedAt": ["pushed_at", "updated_at"]
         },
-        "transforms": { "externalId": "TO_STRING", "isPrivate": "TO_BOOLEAN" }
+        "transforms": {
+          "externalId": "TO_STRING",
+          "ownerExternalId": "TO_STRING",
+          "isPrivate": "TO_BOOLEAN"
+        }
       }
     },
 
@@ -155,7 +169,17 @@
         "queryParams": {
           "page": "{{page}}",
           "per_page": "{{pageSize}}",
-          "state": "{{state}}"
+          "state": "{{state}}",
+          "sort": "updated",
+          "direction": "desc"
+        },
+        "parameterValueMappings": {
+          "state": {
+            "OPEN": "open",
+            "CLOSED": "closed",
+            "MERGED": "closed",
+            "ALL": "all"
+          }
         }
       },
       "responseMapping": {
@@ -174,7 +198,8 @@
           "authorUsername": "user.login",
           "webUrl": "html_url",
           "createdAt": "created_at",
-          "updatedAt": "updated_at"
+          "updatedAt": "updated_at",
+          "mergedAt": "merged_at"
         },
         "transforms": {
           "externalId": "TO_STRING",
@@ -208,7 +233,8 @@
           "authorUsername": "user.login",
           "webUrl": "html_url",
           "createdAt": "created_at",
-          "updatedAt": "updated_at"
+          "updatedAt": "updated_at",
+          "mergedAt": "merged_at"
         },
         "transforms": {
           "externalId": "TO_STRING",

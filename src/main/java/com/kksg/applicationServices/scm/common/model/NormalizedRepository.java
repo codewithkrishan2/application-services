@@ -35,8 +35,19 @@ public class NormalizedRepository {
     /** Owner-qualified name, e.g. {@code acme/my-project}. */
     private String fullName;
 
-    /** Owning user, organisation or workspace slug. */
+    /**
+     * Owning user, organisation or workspace slug.
+     *
+     * <p>This is the <b>addressable</b> owner segment, not a display name: it is what
+     * {@code GET_REPOSITORY} and every pull-request operation substitute into {@code {{owner}}}.
+     */
     private String owner;
+
+    /** Provider's stable identifier for the owner, when it exposes one. Display and linking only. */
+    private String ownerExternalId;
+
+    /** Owner avatar, when the provider exposes one. Display only. */
+    private String ownerAvatarUrl;
 
     private Boolean isPrivate;
 
@@ -49,4 +60,14 @@ public class NormalizedRepository {
 
     /** Human-facing URL for the repository. */
     private String webUrl;
+
+    /**
+     * Last activity timestamp as the provider reported it, ISO-8601.
+     *
+     * <p>Left as text rather than parsed to an {@code Instant} for the same reason
+     * {@code externalId} is a string: providers disagree on precision and offset format, and the
+     * engine's declarative mapping has no date parser. Callers that need a real instant parse it,
+     * and a value that will not parse is reported as absent rather than failing the listing.
+     */
+    private String updatedAt;
 }
